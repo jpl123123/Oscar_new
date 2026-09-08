@@ -11,12 +11,12 @@ import triton.language as tl
 from .config import percentile_selection
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["N"])
 def _rotate_kernel(
     X,
     R,
     Y,
-    N: tl.constexpr,
+    N,
     H: tl.constexpr,
     D: tl.constexpr,
     XT: tl.constexpr,
@@ -85,7 +85,9 @@ def _clip_vec(
             offsets = tl.arange(0, D)
             low_value = tl.full((), 0, tl.float32)
             high_value = tl.full((), 0, tl.float32)
-            for rank in tl.static_range(LOW_RANK + 1):
+            # Keep a bounded loop instead of cloning each dependent reduction
+            # into the Ascend compiler IR (11 K + 22 V iterations by default).
+            for rank in range(LOW_RANK + 1):
                 maximum = tl.max(absolute, 0)
                 if rank == LOW_RANK:
                     low_value = maximum

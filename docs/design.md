@@ -199,6 +199,21 @@ metadata builder 将 block table、seq_len、query_start、slot_mapping 和有�
 复制到 builder 私有固定 NPU buffers，捕获后地址不变；所有边界由 device 数值决定。
 图 replay 使用这些稳定输入，不能在 kernel constexpr 中固化实际 seq_len。
 前向临时 workspace 由 graph pool 捕获。混合 GDN 的图参数更新仍由原生后端执行。
+
+v0.2.6 的外部 hook 在 NPUModelRunner 正常导入完成后包裹 `_dummy_run`，
+用 ContextVar 标记 dummy 作用域，退出或异常时恢复。原生 runner 在 metadata build
+之后才将自己的 slot mapping 填为 -1，OSCAR 的私有快照不能依赖这个后续更新。
+dummy builder 将自己的 counts 设为 [0,0]、slots 设为 -1，清零查询边界和页表；
+图中仍记录 rotation、store、attention、merge 和 window kernel，所有 KV 访问由
+运行时设备计数屏蔽。真实 build 原位写入 counts/页表/slots 后，replay 激活这些
+访问，不使用 Python 分支跳过需要记录的 kernel，也不写共享 dummy 页。
+该处理只改变 OSCAR metadata，GDN/MTP 的原生 metadata 保持其原有流程。
+
+裁剪仍按相同的最大值逐个移除、并列值单元素移除和线性插值计算百分位，
+仅将 `tl.static_range` 改为普通 `range`，减少强制展开的 IR。
+`_rotate_kernel` 的 N 不再是 constexpr，并通过 `do_not_specialize` 复用不同
+token 数的编译结果；head 数、stride 和矩阵布局仍按实际值编译。
+这些变更不修改 rotation 文件、缓存指纹或裁剪数值定义。
 需通过真实 NPU 图回放测试后才可认定图兼容。
 
 配置通过 PR 风格环境变量，启动脚本保留原始服务参数并提供 native 模式。

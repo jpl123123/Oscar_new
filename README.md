@@ -48,6 +48,13 @@ EngineCore/TP worker 启动新解释器，避免多线程父进程 fork 后继�
 rotation 正交性比较显式使用矩阵的 FP32 dtype 与 CPU 设备，再转为 NPU BF16。
 已有有效 `.pt` 可继续复用，更新本版本不改变缓存指纹，无需删除或重做校准。
 
+v0.2.6 修正图启动路径：dummy 预热/捕获通过设备端计数屏蔽 KV 访问，
+避免私有 slot 快照错过原生后续的 `-1` 屏蔽。裁剪选择循环不再强制展开，
+rotation 的 token 数改为运行时参数，避免每种 capture size 重编同一旋转算法。
+保留 FULL_DECODE_ONLY；启动打印每组预热/捕获与首次 kernel launch 阶段，
+捕获期间每120秒输出 Python 栈，完成后取消。`launch returned` 仅表示提交返回，
+不表示设备执行已完成。`OSCAR_STARTUP_TRACE=0` 可关闭这些诊断输出。
+
 默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
 首次运行需要额外校准时间，后续启动会直接复用有效缓存。
 默认校准使用随包提供的16段中英混合文本，每段最多1024 tokens，无需下载数据集。
@@ -151,6 +158,7 @@ python tools/compare_benchmarks.py artifacts/native-prefix-off artifacts/oscar \
 | `oscar_ascend/check.py` | 源码指纹、版本、模型、NPU 预检 |
 | `oscar_ascend/source_interfaces.py` | 无导入副作用的源码接口检查 |
 | `oscar_ascend/runtime_env.py` | 导入前固定后四卡与 spawn 进程策略 |
+| `oscar_ascend/startup.py` | 原生 dummy 作用域、启动阶段日志和超时栈 |
 | `scripts/serve.sh` | 一键启动 |
 | `scripts/test_npu.sh` / `scripts/bench.sh` | 真机测试 / 配对基准 |
 | `tests/` | CPU oracle、隔离测试、真实 NPU kernel/graph 测试 |

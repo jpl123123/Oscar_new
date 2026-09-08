@@ -9,6 +9,7 @@ from vllm_ascend.attention.attention_v1 import AscendAttentionState
 
 from .config import OscarConfig
 from .layout import CacheLayout
+from .startup import dummy_run_scope, in_dummy_run
 
 
 @dataclass
@@ -27,6 +28,7 @@ class OscarMetadata:
     initial_prefill: bool = False
     actual_seq_lengths_q: list | None = None
     causal: bool = True
+    is_dummy: bool = False
 
 
 class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
@@ -82,17 +84,29 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
         for name in ("query_start_loc", "seq_lens", "block_table_tensor", "slot_mapping"):
             if getattr(cm, name).device.type != "npu":
                 raise ValueError(f"Expected NPU metadata for {name}")
-        self.qstarts[: nr + 1].copy_(cm.query_start_loc[: nr + 1], non_blocking=True)
-        self.seqs[:nr].copy_(cm.seq_lens[:nr], non_blocking=True)
-        self.table[:nr, :columns].copy_(cm.block_table_tensor[:nr], non_blocking=True)
-        self.slots[:nt].copy_(cm.slot_mapping[:nt], non_blocking=True)
-        self.counts[0].fill_(nr)
-        self.counts[1].fill_(nt)
+        dummy = in_dummy_run()
+        if dummy:
+            # Native warmup invalidates its slot mapping AFTER building metadata.
+            # A private snapshot would miss that invalidation and write page zero
+            # or stale slots. Dummy runs own no KV pages. Device-side counts mask
+            # all cache accesses while still recording every kernel for replay.
+            self.qstarts.zero_()
+            self.seqs.zero_()
+            self.table.zero_()
+            self.slots.fill_(-1)
+            self.counts.zero_()
+        else:
+            self.qstarts[: nr + 1].copy_(cm.query_start_loc[: nr + 1], non_blocking=True)
+            self.seqs[:nr].copy_(cm.seq_lens[:nr], non_blocking=True)
+            self.table[:nr, :columns].copy_(cm.block_table_tensor[:nr], non_blocking=True)
+            self.slots[:nt].copy_(cm.slot_mapping[:nt], non_blocking=True)
+            self.counts[0].fill_(nr)
+            self.counts[1].fill_(nt)
 
         # Only scheduler CPU metadata is inspected for the optional initial FIA path.
         # PrefillNoCache is a host enum from the native runner; never infer this
         # from a .tolist()/.item() read of device seq_lens.
-        initial = cm.attn_state == AscendAttentionState.PrefillNoCache
+        initial = not dummy and cm.attn_state == AscendAttentionState.PrefillNoCache
         query_ends = None
         if initial:
             if cm.query_start_loc_cpu.device.type != "cpu":
@@ -112,12 +126,14 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
             cm.attn_state,
             initial,
             query_ends,
+            is_dummy=dummy,
         )
 
     def build_for_cudagraph_capture(
         self, common_attn_metadata, attn_state=AscendAttentionState.DecodeOnly
     ):
-        result = self.build(0, common_attn_metadata)
+        with dummy_run_scope():
+            result = self.build(0, common_attn_metadata)
         result.initial_prefill = False
         result.attn_state = attn_state
         return result

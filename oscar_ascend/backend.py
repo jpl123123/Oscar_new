@@ -149,6 +149,10 @@ class OscarAttentionImpl(AttentionImpl):
         from . import kernels
 
         meta = attn_metadata
+        if meta.is_dummy:
+            from .startup import trace_kernels
+
+            kernels = trace_kernels(kernels)
         n = query.shape[0]
         query = query.view(n, self.num_heads, self.head_size)
         key = key.view(key.shape[0], self.num_kv_heads, self.head_size)

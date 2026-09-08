@@ -9,7 +9,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **108 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **119 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -64,6 +64,28 @@ v0.2.5 基于 `207d2d4`：用户反馈真机已成功生成 `.pt`，正式服务
 字节不变且不再次生成。移除 `serve.sh` 的两次环境预检调用，脚本控制流程测试确认
 安装、准备矩阵、启动服务的顺序，仍覆盖继承错误卡号与 fork 的情况。
 这些结果验证此次 dtype 修复与控制流程；没有登录 node93 验证修复后的完整服务启动。
+
+v0.2.6 基于 `aacaf2a`，处理用户反馈的首组 FULL decode capture 停留超过5分钟：
+
+- 读取真实参考 `_dummy_run`，确认先构建 metadata 再将原生 slot mapping 设为 -1。
+  CPU 回归运行真实 OSCAR builder（仅替换 native imports 和设备标签），复现私有
+  快照仍保留0而原生源已为-1；外部 dummy scope 修复后 counts=[0,0]、slots=-1，
+  捕获不访问 KV。随后真实 build 将有效元数据写回相同地址。
+- `_clip_vec` 移除 `tl.static_range`，保持原有选择与插值顺序。
+  使用 Torch 对应 TL 操作执行实际函数体，对随机值、全零、并列值以及
+  0/0.875/0.92/0.96/1.0 百分位与 `torch.quantile` 对照通过。
+  [Triton 文档](https://triton-lang.org/main/python-api/generated/triton.language.static_range.html)
+  明确说明 static_range 会引导积极展开；本地未测量 Ascend 编译耗时。
+- rotation 的 token 数移出 constexpr，按运行时参数传入并禁止值特化。
+  CPU AST 回归检查这两个条件，不冒充真实 Triton 编译结果。
+- hook 仅在原生 runner 导入完成后安装，重复安装幂等；异常恢复 dummy scope，
+  捕获结束/异常取消超时栈定时器。每个 worker 输出启动阶段与首次 kernel 提交耗时，
+  捕获未完成时每120秒输出 Python 栈，覆盖 native synchronize 的等待位置。
+- 扩展真实 NPU 测试，覆盖 counts=0 捕获不改 KV、更新 counts 后 replay 处理真实请求。
+  该 NPU 测试在本地明确跳过。保留后四卡、5656、MTP3、FULL_DECODE_ONLY 和无预检启动。
+
+这些改动修正已发现的 dummy 访问与编译结构问题；现有等待告警无法证明唯一现场根因，
+也没有在本地复现 node93 的 NPU 挂起。修复后的完整图捕获、推理与性能仍待真机验证。
 
 ## 尚未运行的必要检查
 

@@ -32,6 +32,7 @@ def register():
     from importlib.metadata import version
 
     from .compat import require_parameters, validate_versions
+    from .startup import install_runner_hooks
 
     validate_versions({name: version(name) for name in ("vllm", "vllm-ascend")})
     if calibrating:
@@ -55,6 +56,7 @@ def register():
         # NPUModelRunner probes the backend after its native module imports
         # complete and before model construction. Attach hooks at that point.
         _install_loaded_attention_hooks(cls)
+        install_runner_hooks()
         if should_route(attn_selector_config):
             for name in (
                 "has_sink",
@@ -75,6 +77,7 @@ def register():
     NPUPlatform.get_attn_backend_cls = select
     _registered = True
     _install_loaded_attention_hooks(NPUPlatform)
+    install_runner_hooks()
     LOG.warning(
         "OSCAR external attention enabled; native allocation and GDN retained; "
         "prefix sharing disabled; target verification quantized, MTP draft native. "

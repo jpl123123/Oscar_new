@@ -191,12 +191,19 @@ def test_graph_replay_changes_metadata_and_page_owners():
     for _ in range(3):
         run_attention(q, k, v, rk, rv, hist, window, meta, layout, 8)
     torch.npu.synchronize()
+    # Startup capture owns no cache pages; all accesses are masked by device
+    # counts. Replay must still activate the same recorded kernels afterwards.
+    meta.counts.zero_()
+    before_capture = hist.clone(), window.clone()
     graph = torch.npu.NPUGraph()
     with torch.npu.graph(graph):
         actual = run_attention(q, k, v, rk, rv, hist, window, meta, layout, 8)
+    torch.npu.synchronize()
+    assert torch.equal(hist, before_capture[0]) and torch.equal(window, before_capture[1])
     meta.query_start_loc.copy_(torch.tensor([0, 2, 4, 0, 0], device="npu", dtype=torch.int32))
     meta.seq_lens[:2].fill_(2)
     meta.counts[0].fill_(2)
+    meta.counts[1].fill_(4)
     meta.block_tables[0, :6].copy_(torch.arange(18, 24, device="npu", dtype=torch.int32))
     meta.block_tables[1, :6].copy_(torch.arange(36, 42, device="npu", dtype=torch.int32))
     meta.slot_mapping.copy_(
@@ -303,6 +310,7 @@ def test_metadata_builder_capture_entry_and_fixed_pointers():
     )
     captured = builder.build_for_cudagraph_capture(cm)
     assert captured.initial_prefill is False
+    assert captured.is_dummy and captured.counts.cpu().tolist() == [0, 0]
     pointers = [
         getattr(captured, attr).data_ptr()
         for attr in ("query_start_loc", "seq_lens", "slot_mapping", "block_tables", "counts")
@@ -315,3 +323,4 @@ def test_metadata_builder_capture_entry_and_fixed_pointers():
         for attr in ("query_start_loc", "seq_lens", "slot_mapping", "block_tables", "counts")
     ]
     assert replay.seq_lens[0].item() == 1200  # Test-only assertion, outside serving.
+    assert not replay.is_dummy and replay.counts.cpu().tolist() == [1, 4]
