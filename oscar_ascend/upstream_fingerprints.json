@@ -1,0 +1,22 @@
+{
+  "vllm": {
+    "commit": "0fc695fc6d1d82e9a5ac6835ac8e4e1c83703665",
+    "files": {
+      "vllm/plugins/__init__.py": "4be66190ceaee9d0465f62ade801a8e94a907d7ab9fdb0a67fa14ce87448ae9f",
+      "vllm/v1/attention/backend.py": "01e2068470081d2dcf3b676d454ed73d4728798fced35e76ebfa8f0fe4e5dad7",
+      "vllm/v1/attention/selector.py": "4c555b51d39cc8bb9a2f0788d58d87810678970019a85bc8275844f4d7f1a761",
+      "vllm/model_executor/layers/attention/attention.py": "06f49836a73d058c6d38f826bc6c794c3b7ae9751d12d71dfff9e5c2dbdbcd28"
+    }
+  },
+  "vllm-ascend": {
+    "commit": "19e436985102f4ed3aad36c137a6481653688a6c",
+    "files": {
+      "vllm_ascend/__init__.py": "78a49b30387ea8b83113e1723abf306ad4fb1c0cc753e61d7a301c9a95c131c4",
+      "vllm_ascend/platform.py": "30c75952f784c4d047d7202dd7f68c8fc7c22bb975853a5048fb51ffcbe1f2a8",
+      "vllm_ascend/attention/attention_v1.py": "80005aba42bcf61247cc0d91502a0f1338194a4b38dd82bc521f6d3c84958390",
+      "vllm_ascend/worker/model_runner_v1.py": "94d75dbeb5d23ab5b383cdc69114167392b967994bb21342cf748b733ba9a968",
+      "vllm_ascend/worker/block_table.py": "8f77809c12af3bd9d56974edbbe5c792995f2620aadfe62411806f2e68d2ef0a",
+      "vllm_ascend/compilation/acl_graph.py": "27f3b838f223dec86113649625f65b158969a30ce0265271d6a3ce1403db2491"
+    }
+  }
+}
