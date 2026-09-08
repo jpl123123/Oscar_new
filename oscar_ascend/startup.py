@@ -86,14 +86,14 @@ def trace_kernels(kernels, synchronize=None):
                     x, rotation = args
                     variant = (tuple(x.shape[1:]), x.stride(), rotation.stride())
                 if name == "attention_partials":
-                    from .config import attention_task_groups
+                    from .config import attention_programs
 
                     label += ".raw" if kwargs["raw"] else ".history"
                     meta, layout, splits = args[5], args[6], args[8]
-                    groups = attention_task_groups(
-                        args[0].shape[0], meta.max_num_reqs, layout.kv_heads, splits, layout.config
+                    programs = attention_programs(
+                        args[0].shape[0], meta.max_num_reqs, layout.config.queries_per_tile
                     )
-                    variant = (splits, groups)
+                    variant = (splits, programs)
                 key = (label, variant)
                 if key in _traced_ops:
                     return function(*args, **kwargs)

@@ -8,7 +8,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .config import attention_task_groups, percentile_selection
+from .config import attention_programs, percentile_selection
 
 
 @triton.jit(do_not_specialize=["N"])
@@ -308,7 +308,6 @@ def _attention_kernel(
     QT: tl.constexpr,
     BM: tl.constexpr,
     BN: tl.constexpr,
-    TASK_GROUPS: tl.constexpr,
     BK: tl.constexpr,
     BP: tl.constexpr,
     PAGE_BYTES: tl.constexpr,
@@ -331,113 +330,110 @@ def _attention_kernel(
     SCALE: tl.constexpr,
     RAW: tl.constexpr,
 ):
+    # One query task per program. Keep the task lookup on device, but avoid
+    # nesting a persistent task loop around the mixed Cube/Vector KV loop.
+    task = tl.program_id(0)
     total_tasks = tl.load(TaskCount)
-    first_task = tl.program_id(0)
-    # Bound physical launches and walk the compact task list on device. The
-    # one masked iteration for empty lanes retains the balanced CV path.
-    for task in range(first_task, tl.maximum(first_task + 1, total_tasks), TASK_GROUPS):
-        live = task < total_tasks
-        req = tl.load(Tasks + task * 2, live, 0)
-        query_offset = tl.load(Tasks + task * 2 + 1, live, 0)
-        head = tl.program_id(1)
-        split = tl.program_id(2)
-        qstart = tl.load(QStarts + req, live, 0)
-        qend = tl.minimum(tl.load(QStarts + req + 1, live, 0), tl.load(Counts + 1))
-        qlen = qend - qstart
-        seq = tl.load(SeqLens + req, live, 0)
-        prefix = seq - qlen
-        row = tl.arange(0, BM)
-        qi = query_offset + row // G
-        qhead = head * G + row % G
-        token = qstart + qi
-        row_valid = live & (row < QT * G) & (qi < qlen)
-        dims = tl.arange(0, D)
-        q = tl.load(
-            Query + token[:, None] * QS0 + qhead[:, None] * QS1 + dims[None, :] * QS2,
-            row_valid[:, None],
-            0,
-        ).to(tl.bfloat16)
-        sink_len = tl.minimum(SINK, prefix)
-        recent_begin = tl.maximum(sink_len, prefix - RECENT)
+    live = task < total_tasks
+    req = tl.load(Tasks + task * 2, live, 0)
+    query_offset = tl.load(Tasks + task * 2 + 1, live, 0)
+    head = tl.program_id(1)
+    split = tl.program_id(2)
+    qstart = tl.load(QStarts + req, live, 0)
+    qend = tl.minimum(tl.load(QStarts + req + 1, live, 0), tl.load(Counts + 1))
+    qlen = qend - qstart
+    seq = tl.load(SeqLens + req, live, 0)
+    prefix = seq - qlen
+    row = tl.arange(0, BM)
+    qi = query_offset + row // G
+    qhead = head * G + row % G
+    token = qstart + qi
+    row_valid = live & (row < QT * G) & (qi < qlen)
+    dims = tl.arange(0, D)
+    q = tl.load(
+        Query + token[:, None] * QS0 + qhead[:, None] * QS1 + dims[None, :] * QS2,
+        row_valid[:, None],
+        0,
+    ).to(tl.bfloat16)
+    sink_len = tl.minimum(SINK, prefix)
+    recent_begin = tl.maximum(sink_len, prefix - RECENT)
+    if RAW:
+        first_block = tl.load(Table + req * TABLE_STRIDE, live, 0).to(tl.int64)
+        owner = first_block // (BP // BK)
+        length = sink_len + prefix - recent_begin + qlen
+        lo = 0
+    else:
+        lo = sink_len
+        length = recent_begin - lo
+    tiles_per_split = tl.cdiv(tl.cdiv(length, BN), SPLITS)
+    begin = split * tiles_per_split * BN
+    end = tl.minimum((split + 1) * tiles_per_split * BN, length)
+    m = tl.full((BM,), -float("inf"), tl.float32)
+    denominator = tl.full((BM,), 0, tl.float32)
+    acc = tl.full((BM, D), 0, tl.float32)
+    for start in range(begin, tl.maximum(begin + BN, end), BN):
+        ns = start + tl.arange(0, BN)
+        valid = live & (ns < end)
         if RAW:
-            first_block = tl.load(Table + req * TABLE_STRIDE, live, 0).to(tl.int64)
-            owner = first_block // (BP // BK)
-            length = sink_len + prefix - recent_begin + qlen
-            lo = 0
+            high_prefix_len = sink_len + prefix - recent_begin
+            pos = tl.where(
+                ns < sink_len,
+                ns,
+                tl.where(
+                    ns < high_prefix_len,
+                    recent_begin + ns - sink_len,
+                    prefix + ns - high_prefix_len,
+                ),
+            )
+            is_current = ns >= high_prefix_len
+            wi = tl.where(pos < SINK, pos, SINK + pos % RING)
+            window_address = owner * (PAGE_BYTES // 2) + (wi * 2 * H + head) * D
+            k_old = tl.load(
+                Window + window_address[:, None] + dims[None, :],
+                (valid & ~is_current)[:, None],
+                0,
+            )
+            v_old = tl.load(
+                Window + window_address[:, None] + H * D + dims[None, :],
+                (valid & ~is_current)[:, None],
+                0,
+            )
+            ci = qstart + pos - prefix
+            k_new = tl.load(
+                CurrentK + ci[:, None] * KS0 + head * KS1 + dims[None, :] * KS2,
+                (valid & is_current)[:, None],
+                0,
+            )
+            v_new = tl.load(
+                CurrentV + ci[:, None] * VS0 + head * VS1 + dims[None, :] * VS2,
+                (valid & is_current)[:, None],
+                0,
+            )
+            k = tl.where(is_current[:, None], k_new, k_old).to(tl.bfloat16)
+            v = tl.where(is_current[:, None], v_new, v_old).to(tl.bfloat16)
         else:
-            lo = sink_len
-            length = recent_begin - lo
-        tiles_per_split = tl.cdiv(tl.cdiv(length, BN), SPLITS)
-        begin = split * tiles_per_split * BN
-        end = tl.minimum((split + 1) * tiles_per_split * BN, length)
-        m = tl.full((BM,), -float("inf"), tl.float32)
-        denominator = tl.full((BM,), 0, tl.float32)
-        acc = tl.full((BM, D), 0, tl.float32)
-        for start in range(begin, tl.maximum(begin + BN, end), BN):
-            ns = start + tl.arange(0, BN)
-            valid = live & (ns < end)
-            if RAW:
-                high_prefix_len = sink_len + prefix - recent_begin
-                pos = tl.where(
-                    ns < sink_len,
-                    ns,
-                    tl.where(
-                        ns < high_prefix_len,
-                        recent_begin + ns - sink_len,
-                        prefix + ns - high_prefix_len,
-                    ),
-                )
-                is_current = ns >= high_prefix_len
-                wi = tl.where(pos < SINK, pos, SINK + pos % RING)
-                window_address = owner * (PAGE_BYTES // 2) + (wi * 2 * H + head) * D
-                k_old = tl.load(
-                    Window + window_address[:, None] + dims[None, :],
-                    (valid & ~is_current)[:, None],
-                    0,
-                )
-                v_old = tl.load(
-                    Window + window_address[:, None] + H * D + dims[None, :],
-                    (valid & ~is_current)[:, None],
-                    0,
-                )
-                ci = qstart + pos - prefix
-                k_new = tl.load(
-                    CurrentK + ci[:, None] * KS0 + head * KS1 + dims[None, :] * KS2,
-                    (valid & is_current)[:, None],
-                    0,
-                )
-                v_new = tl.load(
-                    CurrentV + ci[:, None] * VS0 + head * VS1 + dims[None, :] * VS2,
-                    (valid & is_current)[:, None],
-                    0,
-                )
-                k = tl.where(is_current[:, None], k_new, k_old).to(tl.bfloat16)
-                v = tl.where(is_current[:, None], v_new, v_old).to(tl.bfloat16)
-            else:
-                pos = lo + ns
-                block = tl.load(Table + req * TABLE_STRIDE + pos // BK, valid, 0).to(tl.int64)
-                slot = block * BK + pos % BK
-                address = slot // BP * PAGE_BYTES + (slot % BP * H + head) * SLOT
-                k = _load_vec(History, address, valid, D, BN)
-                v = _load_vec(History, address + VECTOR, valid, D, BN)
-            score = tl.dot(q, tl.trans(k)) * SCALE
-            mask = row_valid[:, None] & valid[None, :] & (pos[None, :] <= prefix + qi[:, None])
-            score = tl.where(mask, score, -float("inf"))
-            new_m = tl.maximum(m, tl.max(score, 1))
-            # For an all-masked row both maxima are -inf. Avoid inf-inf NaNs.
-            safe_m = tl.where(new_m == -float("inf"), 0.0, new_m)
-            alpha = tl.exp(m - safe_m)
-            p = tl.exp(score - safe_m[:, None])
-            acc = acc * alpha[:, None] + tl.dot(p.to(tl.bfloat16), v)
-            denominator = denominator * alpha + tl.sum(p, 1)
-            m = new_m
-        normalized = acc / tl.maximum(denominator[:, None], 1.0e-30)
-        logsum = tl.where(
-            denominator > 0, m + tl.log(tl.maximum(denominator, 1.0e-30)), -float("inf")
-        )
-        outrow = (token.to(tl.int64) * H * G + qhead) * SPLITS + split
-        tl.store(Partials + outrow[:, None] * D + dims[None, :], normalized, row_valid[:, None])
-        tl.store(LSE + outrow, logsum, row_valid)
+            pos = lo + ns
+            block = tl.load(Table + req * TABLE_STRIDE + pos // BK, valid, 0).to(tl.int64)
+            slot = block * BK + pos % BK
+            address = slot // BP * PAGE_BYTES + (slot % BP * H + head) * SLOT
+            k = _load_vec(History, address, valid, D, BN)
+            v = _load_vec(History, address + VECTOR, valid, D, BN)
+        score = tl.dot(q, tl.trans(k)) * SCALE
+        mask = row_valid[:, None] & valid[None, :] & (pos[None, :] <= prefix + qi[:, None])
+        score = tl.where(mask, score, -float("inf"))
+        new_m = tl.maximum(m, tl.max(score, 1))
+        # For an all-masked row both maxima are -inf. Avoid inf-inf NaNs.
+        safe_m = tl.where(new_m == -float("inf"), 0.0, new_m)
+        alpha = tl.exp(m - safe_m)
+        p = tl.exp(score - safe_m[:, None])
+        acc = acc * alpha[:, None] + tl.dot(p.to(tl.bfloat16), v)
+        denominator = denominator * alpha + tl.sum(p, 1)
+        m = new_m
+    normalized = acc / tl.maximum(denominator[:, None], 1.0e-30)
+    logsum = tl.where(denominator > 0, m + tl.log(tl.maximum(denominator, 1.0e-30)), -float("inf"))
+    outrow = (token.to(tl.int64) * H * G + qhead) * SPLITS + split
+    tl.store(Partials + outrow[:, None] * D + dims[None, :], normalized, row_valid[:, None])
+    tl.store(LSE + outrow, logsum, row_valid)
 
 
 def attention_partials(query, key, value, history, window, meta, layout, scale, splits, raw):
@@ -446,8 +442,8 @@ def attention_partials(query, key, value, history, window, meta, layout, scale, 
     cfg = layout.config
     partials = torch.empty((n, hq, splits, d), dtype=torch.float32, device=query.device)
     lse = torch.empty((n, hq, splits), dtype=torch.float32, device=query.device)
-    groups = attention_task_groups(n, meta.max_num_reqs, h, splits, cfg)
-    _attention_kernel[(groups, h, splits)](
+    programs = attention_programs(n, meta.max_num_reqs, cfg.queries_per_tile)
+    _attention_kernel[(programs, h, splits)](
         query,
         key,
         value,
@@ -467,7 +463,6 @@ def attention_partials(query, key, value, history, window, meta, layout, scale, 
         cfg.queries_per_tile,
         max(16, triton.next_power_of_2(cfg.queries_per_tile * (hq // h))),
         cfg.block_n,
-        groups,
         layout.kernel_block_tokens,
         layout.physical_block_tokens,
         layout.stripe_page_bytes,

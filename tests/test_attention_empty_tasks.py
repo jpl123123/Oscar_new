@@ -31,7 +31,7 @@ class Pointer:
         return offsets, mask, indices
 
 
-def run_body(raw, active, task, lengths=(4,), groups=1):
+def run_body(raw, active, task, lengths=(4,), order="forward"):
     accesses, dots = [], []
     generator = torch.Generator().manual_seed(15)
     n = sum(lengths)
@@ -130,7 +130,12 @@ def run_body(raw, active, task, lengths=(4,), groups=1):
         tensors["QStarts"], tensors["Counts"], tensors["Tasks"], tensors["TaskCount"], 8, 4
     )
     pointers = {name: Pointer(value, name, accesses) for name, value in tensors.items()}
-    for pid[0] in range(groups) if task is None else [task]:
+    program_ids = list(range(max(n, 1))) if task is None else [task]
+    if order == "reverse":
+        program_ids.reverse()
+    elif order == "interleaved":
+        program_ids = program_ids[::2] + program_ids[1::2]
+    for pid[0] in program_ids:
         namespace["_attention_kernel"](
             **pointers,
             H=1,
@@ -139,7 +144,6 @@ def run_body(raw, active, task, lengths=(4,), groups=1):
             QT=4,
             BM=32,
             BN=32,
-            TASK_GROUPS=groups,
             BK=128,
             BP=768,
             PAGE_BYTES=768 * 256 * 2,
@@ -200,10 +204,10 @@ def test_live_raw_current_attention_remains_causal():
     assert len(dots) == 2 and not {"History", "Window"} & set(accesses)
 
 
-@pytest.mark.parametrize("groups", [1, 2, 4])
-def test_persistent_program_handles_multiple_ragged_tasks(groups):
+@pytest.mark.parametrize("order", ["forward", "reverse", "interleaved"])
+def test_single_task_programs_handle_ragged_queries_in_any_order(order):
     lengths = (7, 0, 2, 5)
-    partials, lse, accesses, dots, (q, k, v) = run_body(True, True, None, lengths, groups)
+    partials, lse, accesses, dots, (q, k, v) = run_body(True, True, None, lengths, order)
     start = 0
     for length in lengths:
         if length:
@@ -227,3 +231,15 @@ def test_persistent_program_handles_multiple_ragged_tasks(groups):
             )
         start += length
     assert not {"History", "Window"} & set(accesses)
+
+
+def test_attention_has_only_the_kv_loop():
+    path = Path(__file__).resolve().parents[1] / "oscar_ascend/kernels.py"
+    fn = next(
+        n
+        for n in ast.parse(path.read_text()).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_attention_kernel"
+    )
+    loops = [n for n in ast.walk(fn) if isinstance(n, (ast.For, ast.While))]
+    assert len(loops) == 1
+    assert isinstance(loops[0], ast.For) and loops[0].target.id == "start"

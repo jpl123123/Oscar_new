@@ -224,7 +224,7 @@ inactive task 使用安全请求下标，Q、页表、KV 和输出的实际访�
 用以区分前序工作阻塞与当前 kernel 阻塞；捕获期和正常推理不执行这些同步。
 超时栈写入每个 worker 独立的文件，记录器退出时取消计时并关闭文件。
 
-### v0.3.0 紧凑任务与直接 FULL graph
+### v0.3.x 紧凑任务与直接 FULL graph
 
 metadata builder 新增固定地址 `tasks[capacity,2]` 和 `task_count`。
 `_prepare_tasks_kernel` 从 NPU query boundaries 计算每个请求的 `ceil(query_len/QT)`，
@@ -232,12 +232,15 @@ metadata builder 新增固定地址 `tasks[capacity,2]` 和 `task_count`。
 复制页表可达列。长度上界使用原生 scheduler 已有的 host 整数 `max_seq_len`，
 缺失时保守复制全部列，不回读设备长度。所有输出在同一 stream 上先于 replay 更新。
 
-attention 的第0维 grid 最多为 `ceil(program_budget/(kv_heads*splits))`，
-每个 program 以 grid 大小为步长遍历设备任务表，任务不依赖原请求数排序。
-history 和 raw 共享同一任务表；每个有效 query/split 仍写自己的 partial 槽，
-无需原子操作。空 lane 保留一个掩码迭代，program 上限减少了 dummy 的额外工作量。
-512-token、129-request容量、QT=4、splits=8 时，旧 grid 为256×8=2048，
-新 grid 为4×8=32。这是 launch 数的变化，不是实测64倍速度提升。
+v0.3.0/0.3.1 曾通过小 grid 加 kernel 内的持久化循环遍历任务表。
+v0.3.1 现场四个 worker 均在 history attention 提交后等待设备完成，
+v0.3.2 撤销这层任务循环，只保留内部的 KV tile 循环。
+第0维 grid 使用 `min(tokens, ceil(tokens/QT)+max_reqs-1)` 的静态安全上界，
+每个 program 对应一个 task_id，从 NPU 紧凑任务表查询请求与 query offset。
+history 和 raw 共享任务表，每个有效 query/split 写自己的 partial 槽，无需原子操作；
+空任务仍通过掩码保护实际访问。512-token、129-request容量、QT=4、splits=8 的
+grid 回到256×8=2048，不再承诺32-program执行。保留的优化是避免重复请求扫描，
+不是已经测得的设备耗时或吞吐提升。
 
 v0.3.0 曾将 INT2 load 改为 `(BN,D/4)` 唯一字节，再以三维尾轴扩展四个2-bit code。
 现场 IR 证明窄尾轴的对齐会放大 UB，v0.3.1 恢复 `(BN,D)` 二维 load/位运算，

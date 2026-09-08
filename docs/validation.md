@@ -10,7 +10,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **173 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **174 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -166,6 +166,24 @@ v0.3.1 基于 `620f698`，撤销造成 UB 对齐膨胀的三维解包优化：
 
 本次恢复重复字节地址，明确撤回从源代码load宽度推断其一定更快的优化判断。
 不改动 `.pt`、量化公式、位序或其他用户的设备。仍缺当前版本完整真机编译和graph验收。
+
+v0.3.2 基于 `b5cd96c`，根据更精确的设备完成日志撤销持久化任务循环：
+
+- 四个 worker 的 rotation/store 均报告 device complete，history `(splits=8,groups=4)`
+  在约12秒编译/提交返回后停在设备完成等待。已进入 kernel 执行等待，不再笼统
+  描述成正常编译慢；没有该 kernel 完成或后续graph成功的证据。
+- 移除 v0.3.0 加入的外层多任务循环与 TASK_GROUPS 参数。一个 program 处理一个
+  task_id，仍通过 NPU 紧凑表取 request/query offset；没有跳过history或替换输出。
+  从head/query加载开始的attention数学主体，与有过现场设备完成记录的
+  `e148925` 对应主体 AST 一致，二维解包也保持该历史实现。
+- 移除 program_budget 配置；旧 OSCAR_ASCEND_PROGRAM_BUDGET 不再改变执行。
+  512-token/8-split grid恢复2048个program，不再用32个program作为性能承诺。
+  任务表避免重复请求扫描、页表融合复制和直接FULL graph等独立改动仍保留。
+- 回归覆盖顺序/逆序/交错program执行下的ragged因果attention、任务唯一归属、
+  无效任务屏蔽，并约束attention内只保留KV循环。174项CPU测试通过，两个NPU模块跳过。
+
+该回退针对新增持久化执行路径；未在本地证明它就是硬件等待的唯一原因。
+整体NPU启动、graph replay、质量及性能仍未验收通过。
 
 ## 尚未运行的必要检查
 

@@ -72,9 +72,8 @@ v0.2.8 消除 GDN 捕获 metadata 的一次冗余 NPU→CPU 回读：接受 toke
 
 v0.3.x 的执行与启动改动：
 
-- 在 NPU 上按批次建立紧凑任务表，供所有 history/raw split 使用；attention program
-  循环处理任务，避免每个 program 重新扫描全部请求。默认 program budget 为32，
-  512-token、8-split history 的 launch grid 从2048个 program 降为32个。
+- 在 NPU 上按批次建立紧凑任务表，供 history/raw split 使用；每个 attention
+  program 读取一个任务，避免重新扫描全部请求。
 - INT2 使用二维解包，避免窄尾轴三维展开导致的 UB 对齐膨胀。
 - 页表复制融合进任务准备 kernel，仅复制原生 host 长度上界可达的列，保留固定
   buffer 地址/stride；dummy 不再反复清零最大上下文的整张页表。
@@ -83,15 +82,20 @@ v0.3.x 的执行与启动改动：
   编译，运行时保持 `FULL_DECODE_ONLY`。外部 hook 同时修正原生 `_use_aclgraph`
   对 FX 的依赖，使图参数初始化保持启用；显式 eager 仍关闭 graph。
 
-这些是已实现并完成本地回归的候选优化。program 数、字节地址和复制范围的减少
+这些是已实现并完成本地回归的候选改动。请求扫描和复制范围的减少
 不等于已经测得端到端加速；直接 FULL graph 的真机捕获/请求 replay 仍需现场验证。
-`OSCAR_ASCEND_PROGRAM_BUDGET` 可选择8/16/32/64，默认32；实际最佳值需 profiler 测量。
 
 v0.3.1 撤销了 v0.3.0 的三维 packed-byte 展开优化。现场 IR 显示逻辑
 `32×64×4` BF16 tile 被补齐为 `32×64×16`，单个临时缓冲从16 KiB增至64 KiB，
 随后还有转置缓冲。恢复此前真机完成过执行的二维解包函数，保留紧凑任务、
 页表复制与直接 FULL graph 路径。该修正不改变 `.pt`、INT2 位序或量化公式；
 新整体 kernel 的真机编译和完整 graph 仍须验证。
+
+v0.3.2 根据四个 worker 停在 history attention 的设备完成等待这一现场记录，
+撤销 kernel 内的持久化多任务循环。保留紧凑任务表，恢复每个 program 一个任务、
+内部仅遍历 KV tile 的结构；不跳过 history，也不更改 FULL graph 设置。
+此前的32-program配置和 `OSCAR_ASCEND_PROGRAM_BUDGET` 已撤回，旧环境变量不再
+改变执行路径。此改动针对持久化执行回归，是否解除真机阻塞仍待验证。
 
 默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
 首次运行需要额外校准时间，后续启动会直接复用有效缓存。

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from oscar_ascend.config import OscarConfig, attention_task_groups, task_capacity
+from oscar_ascend.config import OscarConfig, attention_programs, task_capacity
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -112,21 +112,20 @@ def test_compact_map_matches_ragged_query_partition(query_tile, lengths, active)
     "tokens,requests,splits",
     [(1, 1, 32), (512, 129, 8), (512, 129, 1), (16000, 129, 1), (32, 8, 16)],
 )
-def test_persistent_lanes_cover_each_task_exactly_once(tokens, requests, splits):
+def test_grid_covers_each_task_without_persistent_loop(tokens, requests, splits):
     cfg = OscarConfig()
-    groups = attention_task_groups(tokens, requests, 1, splits, cfg)
+    programs = attention_programs(tokens, requests, cfg.queries_per_tile)
     capacity = task_capacity(tokens, requests, cfg.queries_per_tile)
-    assert groups * splits <= max(cfg.program_budget, splits)
+    assert programs >= capacity
     for total in (0, 1, max(1, capacity // 2), capacity):
-        visited = [task for lane in range(groups) for task in range(lane, total, groups)]
+        visited = [task for task in range(programs) if task < total]
         assert sorted(visited) == list(range(total))
     if tokens == 512 and splits == 8:
-        assert capacity * splits == 2048
-        assert groups * splits == 32
+        assert programs * splits == 2048
 
 
-def test_program_budget_validation_and_env(monkeypatch):
-    monkeypatch.setenv("OSCAR_ASCEND_PROGRAM_BUDGET", "16")
-    assert OscarConfig.from_env().program_budget == 16
-    with pytest.raises(ValueError, match="PROGRAM_BUDGET"):
-        OscarConfig(program_budget=3)
+def test_retired_budget_cannot_reenable_persistent_execution(monkeypatch):
+    monkeypatch.setenv("OSCAR_ASCEND_PROGRAM_BUDGET", "32")
+    cfg = OscarConfig.from_env()
+    assert not hasattr(cfg, "program_budget")
+    assert attention_programs(512, 129, cfg.queries_per_tile) == 256
