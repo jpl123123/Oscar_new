@@ -99,6 +99,9 @@ def trace_kernels(kernels, synchronize=None):
 
 def install_runner_hooks():
     """Attach after the native runner module has finished its normal imports."""
+    from .capture_metadata import install_gdn_capture_hook
+
+    install_gdn_capture_hook()
     module = sys.modules.get("vllm_ascend.worker.model_runner_v1")
     if module is None or getattr(getattr(module, "__spec__", None), "_initializing", False):
         return False
@@ -115,6 +118,8 @@ def install_runner_hooks():
 
     @functools.wraps(original_dummy)
     def dummy(runner, *args, **kwargs):
+        # A platform may finish loading its GDN builder after the initial probe.
+        install_gdn_capture_hook()
         bound = signature.bind(runner, *args, **kwargs)
         bound.apply_defaults()
         capturing = bound.arguments["is_graph_capturing"]
@@ -154,7 +159,10 @@ def install_runner_hooks():
                 if stack_file is not None:
                     stack_file.close()
         if trace:
-            _log(f"graph capture complete device={runner.device}")
+            _log(
+                f"capture_model returned device={runner.device} graph_pool_bytes={result}; "
+                "real-request graph replay and accuracy acceptance are not established"
+            )
         return result
 
     runner_class._dummy_run = dummy

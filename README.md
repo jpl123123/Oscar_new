@@ -9,12 +9,14 @@
 
 实现包括 Triton Ascend rotation、clip/INT2 store、分页 split-KV attention、
 BF16 sink/recent/current、LSE merge 和 vLLM general plugin。
-主模型 FULL 层使用 OSCAR，GDN 和 MTP draft 层保持原生；MTP target verification
+主模型 FULL 层使用 OSCAR，GDN 和 MTP draft 算子保持原生；MTP target verification
 的多个候选 query 在同一 Triton program 内复用 KV tile。
 
-**当前为待真机验证的实现。** 本地 CPU 检查不代表 NPU 编译、端到端启动、图回放、
-精度或“不慢于原生”已经通过。v0.2.0 已实现缺失 rotation 时的自动校准流程，
-该流程的实际 NPU 编译和模型运行也需要现场验证。
+**最近真机结果：FULL decode 启动阻塞，graph 验收未通过。** 后续候选变更尚无
+成功的真机启动、真实请求 graph replay、精度或性能记录。本地 CPU 测试只能证明
+其覆盖的控制流程与数学性质，不能将本项目称为已跑通、已优化完成或不慢于原生。
+用户已反馈 `.pt` 生成成功；这不等于服务启动或模型质量验收成功。
+CPU 回读与同步的逐项记录见 [CPU/同步审计](docs/cpu-audit.md)。
 
 ## 真机一键启动
 
@@ -61,6 +63,12 @@ tile，避免整个 Cube/Vector 分支或循环被跳过，掩码继续阻止无
 `artifacts/startup/worker-<pid>-stacks.log`，完成后取消，避免四卡输出交错。
 `OSCAR_STARTUP_TRACE=0` 可关闭这些诊断，`OSCAR_STARTUP_LOG_DIR` 可指定日志目录。
 这些更新继续复用已有 `.pt`，不改变量化参数或矩阵文件。
+
+v0.2.8 消除 GDN 捕获 metadata 的一次冗余 NPU→CPU 回读：接受 token 数继续在
+设备上计算，CPU 侧的 draft 分类直接使用 runner 已有的 CPU 查询边界副本。
+这是外部 metadata hook，未改动 GDN/conv/SSM 算子；它消除该同步点，不代表
+前序设备工作阻塞已经解决。启动日志仅报告 `capture_model returned`，不宣称
+真实请求 graph replay 或精度验收通过。
 
 默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
 首次运行需要额外校准时间，后续启动会直接复用有效缓存。
@@ -166,6 +174,7 @@ python tools/compare_benchmarks.py artifacts/native-prefix-off artifacts/oscar \
 | `oscar_ascend/source_interfaces.py` | 无导入副作用的源码接口检查 |
 | `oscar_ascend/runtime_env.py` | 导入前固定后四卡与 spawn 进程策略 |
 | `oscar_ascend/startup.py` | 原生 dummy 作用域、启动阶段日志和超时栈 |
+| `oscar_ascend/capture_metadata.py` | 复用 CPU 调度副本，避免 GDN 捕获时冗余 D2H |
 | `scripts/serve.sh` | 一键启动 |
 | `scripts/test_npu.sh` / `scripts/bench.sh` | 真机测试 / 配对基准 |
 | `tests/` | CPU oracle、隔离测试、真实 NPU kernel/graph 测试 |

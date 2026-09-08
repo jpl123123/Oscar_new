@@ -1,6 +1,7 @@
 # 验证记录 — 2026-09-08
 
-状态：**本地实现与检查完成；NPU / 端到端 / 精度 / 性能验收未完成**。
+状态：**最近真机启动阻塞；NPU graph / 端到端 / 精度 / 性能验收未通过**。
+后续候选变更尚无成功的真机记录；本地测试结果不覆盖这些验收结论。
 
 ## 实际运行
 
@@ -9,7 +10,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **129 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **137 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -108,6 +109,24 @@ GDN 自身出错或某个 OSCAR kernel 已完成。保留原生 GDN 路径与编
 
 本地总计129项通过，两个 NPU 模块跳过。没有修改 `.pt` 或校准指纹；
 未声称本地测试已经验证 node93 挂起消失。
+
+v0.2.8 消除 GDN capture metadata 的冗余 D2H，并纠正验收表述：
+
+- 外部 hook 使用已有 CPU query boundaries 计算 host draft 分类，接受 token 数
+  仍通过 NPU query boundaries 计算，再交给原生 GDN build。
+  原生 GDN/conv/SSM 算子和普通 async decode metadata 路径没有替换。
+- CPU 测试禁止设备对象调用 `.cpu()`/`.item()`/`.tolist()`/`.numpy()`，
+  执行实际参考 capture 函数可复现 D2H，执行适配函数不触发回读。
+  四种查询边界（含零长度 padding）的参数与原公式一致；缺失/不匹配 CPU
+  副本不回退到 D2H。该测试不是实际 NPU 性能测试。
+- hook 延后至原生 GDN module 完成初始化才安装，保持原生 build 和其他平台的
+  自有 capture override。日志仅报告 capture_model 返回，不据此声称 graph 验收成功。
+- 用户最新 e148925 现场日志已包含各类首次 kernel 的 `device complete`。
+  该证据证明这些首次提交的设备工作完成，日志仍停在512-token capture 开始；
+  不能外推为全部层、所有capture档位、真实请求replay或精度已通过。
+
+当前状态仍为真机启动验收未通过。本地137项通过，两个 NPU 模块跳过。
+详细 CPU 边界、尚未优化的校准回读与诊断同步见 [CPU/同步审计](cpu-audit.md)。
 
 ## 尚未运行的必要检查
 

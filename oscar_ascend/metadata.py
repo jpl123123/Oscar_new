@@ -64,6 +64,7 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
 
     @classmethod
     def get_cudagraph_support(cls, vllm_config, kv_cache_spec):
+        # vLLM dispatch capability, not a claim that NPU graph acceptance passed.
         return AttentionCGSupport.ALWAYS
 
     def reorder_batch(self, input_batch, scheduler_output):
