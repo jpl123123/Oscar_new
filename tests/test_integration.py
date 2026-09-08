@@ -196,6 +196,44 @@ def test_launch_command_preserves_mtp_and_graph(mode, disabled):
     assert "--async-scheduling" in cmd and "--enforce-eager" not in cmd
 
 
+def test_graph_runtime_selector_switches_compile_config():
+    def launch(graph_runtime):
+        env = dict(
+            os.environ,
+            MODE="oscar",
+            DRY_RUN="1",
+            OSCAR_GRAPH_RUNTIME=graph_runtime,
+        )
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/serve.sh")],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return shlex.split(result.stdout.splitlines()[1])
+
+    direct = launch("direct")
+    assert json.loads(direct[direct.index("--compilation-config") + 1])["mode"] == 0
+    assert json.loads(direct[direct.index("--additional-config") + 1])[
+        "ascend_compilation_config"
+    ] == {"enable_npugraph_ex": False, "enable_static_kernel": False}
+    assert "--enforce-eager" not in direct
+
+    compile_mode = launch("compile")
+    graph = json.loads(compile_mode[compile_mode.index("--compilation-config") + 1])
+    additional = json.loads(compile_mode[compile_mode.index("--additional-config") + 1])
+    assert "mode" not in graph and graph["cudagraph_mode"] == "FULL_DECODE_ONLY"
+    assert "enable_npugraph_ex" not in additional["ascend_compilation_config"]
+    assert "--enforce-eager" not in compile_mode
+
+    eager = launch("eager")
+    assert "--enforce-eager" in eager
+
+    with pytest.raises(subprocess.CalledProcessError):
+        launch("bogus")
+
+
 def test_invalid_model_dimensions_fail_preflight(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps({"text_config": {"head_dim": 128}}))
     with pytest.raises(ValueError, match="head_dim"):

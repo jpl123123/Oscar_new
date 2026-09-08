@@ -32,11 +32,28 @@ export VLLM_OSCAR_V_CLIP_RATIO="${VLLM_OSCAR_V_CLIP_RATIO:-0.92}"
 
 compile_mode=""
 additional_config='{"enable_cpu_binding":true}'
+GRAPH_RUNTIME="${OSCAR_GRAPH_RUNTIME:-direct}"
 if [[ "$MODE" == oscar ]]; then
-  # Runtime ACLGraph capture is independent of Dynamo/npugraph_ex compilation.
-  # Keep FULL decode capture while avoiding FX/AOT recompile and extra graph wrappers.
-  compile_mode='"mode":0,'
-  additional_config='{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_npugraph_ex":false,"enable_static_kernel":false}}'
+  case "$GRAPH_RUNTIME" in
+    direct)
+      # Runtime ACLGraph capture is independent of Dynamo/npugraph_ex compilation.
+      # Keep FULL decode capture while avoiding FX/AOT recompile and extra graph wrappers.
+      compile_mode='"mode":0,'
+      additional_config='{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_npugraph_ex":false,"enable_static_kernel":false}}'
+      ;;
+    compile)
+      # Upstream-supported graph path (pre-direct default): VLLM_COMPILE with
+      # npugraph_ex, so FULL capture records the compiled model, not eager ops.
+      additional_config='{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_static_kernel":false}}'
+      ;;
+    eager)
+      # No graph capture at all; only appends --enforce-eager below.
+      ;;
+    *)
+      echo "OSCAR_GRAPH_RUNTIME must be direct, compile or eager" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 cmd=("$PYTHON_BIN" -m vllm.entrypoints.cli.main serve "$MODEL"
@@ -59,13 +76,13 @@ fi
 if [[ "$MODE" == oscar ]]; then
   cmd+=(--kv-cache-dtype auto --dtype bfloat16)
 fi
-if [[ "${OSCAR_ENFORCE_EAGER:-0}" == 1 ]]; then
+if [[ "${OSCAR_ENFORCE_EAGER:-0}" == 1 || "$GRAPH_RUNTIME" == eager ]]; then
   cmd+=(--enforce-eager)
 fi
 cmd+=("$@")
 
 if [[ "${DRY_RUN:-0}" == 1 ]]; then
-  printf 'MODE=%s OSCAR_ASCEND_ENABLED=%s ASCEND_RT_VISIBLE_DEVICES=%s VLLM_WORKER_MULTIPROC_METHOD=%s\n' "$MODE" "$OSCAR_ASCEND_ENABLED" "$ASCEND_RT_VISIBLE_DEVICES" "$VLLM_WORKER_MULTIPROC_METHOD"
+  printf 'MODE=%s OSCAR_ASCEND_ENABLED=%s OSCAR_GRAPH_RUNTIME=%s ASCEND_RT_VISIBLE_DEVICES=%s VLLM_WORKER_MULTIPROC_METHOD=%s\n' "$MODE" "$OSCAR_ASCEND_ENABLED" "$GRAPH_RUNTIME" "$ASCEND_RT_VISIBLE_DEVICES" "$VLLM_WORKER_MULTIPROC_METHOD"
   printf '%q ' "${cmd[@]}"
   printf '\n'
   exit 0
