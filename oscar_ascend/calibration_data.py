@@ -72,8 +72,11 @@ def load_texts(path=None):
     return records, "user-jsonl"
 
 
-def token_prompts(tokenizer, texts, tokens=1024, builtin=False):
+def token_prompts(tokenizer, texts, tokens=1024, builtin=False, minimum=32):
+    # Real workload JSONL routinely contains short queries; skip them instead of
+    # aborting a full calibration run that already loaded the TP4 model.
     prompts = []
+    skipped = []
     for index, text in enumerate(texts):
         if builtin:
             # Deterministic long contexts, no downloads and no hidden benchmark dataset.
@@ -86,8 +89,20 @@ def token_prompts(tokenizer, texts, tokens=1024, builtin=False):
             )
         else:
             ids = tokenizer.encode(text, add_special_tokens=True)
-        ids = ids[:tokens]
-        if len(ids) < 32:
-            raise ValueError(f"Calibration prompt {index} contains fewer than 32 tokens")
+        ids = list(ids)[:tokens]
+        if len(ids) < minimum:
+            skipped.append(index)
+            continue
         prompts.append({"prompt_token_ids": ids})
+    if skipped:
+        print(
+            f"[OSCAR calibration] Skipped {len(skipped)} short prompt(s) below "
+            f"{minimum} tokens at record indexes {skipped}",
+            flush=True,
+        )
+    if not prompts:
+        raise ValueError(
+            f"All {len(texts)} calibration prompts are below {minimum} tokens; "
+            "fix OSCAR_CALIBRATION_DATA or unset it to use the builtin bootstrap texts"
+        )
     return prompts

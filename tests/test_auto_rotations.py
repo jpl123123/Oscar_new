@@ -168,6 +168,18 @@ def test_prompt_token_budget_is_bounded():
     assert len(prompts[0]["prompt_token_ids"]) == 1024
 
 
+def test_short_user_prompts_are_skipped_not_fatal(capsys):
+    tokenizer = SimpleNamespace(
+        chat_template=None, encode=lambda text, **kw: list(range(len(text)))
+    )
+    usable = "A long enough test passage about a subject."
+    prompts = token_prompts(tokenizer, ["hi", usable, "ok"], 1024)
+    assert len(prompts) == 1
+    assert "Skipped 2" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="below 32 tokens"):
+        token_prompts(tokenizer, ["hi", "ok"], 1024)
+
+
 def test_calibration_runs_two_native_passes_and_shuts_down(model, tmp_path, monkeypatch):
     from oscar_ascend import calibrate
 
