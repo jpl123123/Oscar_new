@@ -45,6 +45,9 @@ def get_rotation(path, name, device, dim=256):
         raise ValueError(f"Expected D{dim} rotation for {name}; got {tuple(matrix.shape)}")
     if not torch.isfinite(matrix).all():
         raise ValueError(f"Nonfinite rotation for {name}")
-    if not torch.allclose(matrix.T @ matrix, torch.eye(dim), atol=0.015, rtol=0.015):
+    # vLLM runs post-load hooks with BF16 as the default dtype. Keep artifact
+    # validation on the checkpoint's FP32 CPU tensors before the NPU conversion.
+    identity = torch.eye(dim, dtype=matrix.dtype, device=matrix.device)
+    if not torch.allclose(matrix.T @ matrix, identity, atol=0.015, rtol=0.015):
         raise ValueError(f"Rotation for {name} is not orthogonal")
     return matrix.to(device=device, dtype=torch.bfloat16).contiguous()

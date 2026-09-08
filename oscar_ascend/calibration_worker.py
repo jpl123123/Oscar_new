@@ -163,8 +163,9 @@ def finish(worker, output_dir, provenance, max_sweeps):
         }
         for number, index in enumerate(sorted(_states)):
             matrix = rotations_cpu[number * 2 + offset]
+            identity = torch.eye(256, dtype=matrix.dtype, device=matrix.device)
             if not torch.isfinite(matrix).all() or not torch.allclose(
-                matrix.T @ matrix, torch.eye(256), atol=0.005, rtol=0.005
+                matrix.T @ matrix, identity, atol=0.005, rtol=0.005
             ):
                 raise RuntimeError(f"Generated {kind} rotation for layer {index} failed validation")
             result["layers"][index] = {

@@ -49,7 +49,8 @@ def write_pair(directory, fingerprint, profile, run="test-only", bad_v=False):
         torch.save(payload, directory / f"{kind}_rotation.pt")
 
 
-def test_missing_generates_then_reuses_without_model_loading(model, tmp_path):
+@pytest.mark.parametrize("default_dtype", [torch.float32, torch.bfloat16])
+def test_missing_generates_then_reuses_without_model_loading(model, tmp_path, default_dtype):
     calls = []
 
     def generate(model_path, output, fingerprint, profile):
@@ -57,10 +58,17 @@ def test_missing_generates_then_reuses_without_model_loading(model, tmp_path):
         write_pair(output, fingerprint, profile)
 
     first = prep.prepare(model, tmp_path / "cache", generator=generate)
-    second = prep.prepare(model, tmp_path / "cache", generator=generate)
+    originals = {kind: Path(first[kind]).read_bytes() for kind in ("k", "v")}
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(default_dtype)
+        second = prep.prepare(model, tmp_path / "cache", generator=generate)
+    finally:
+        torch.set_default_dtype(previous_dtype)
     assert first["status"] == "generated" and second["status"] == "reused"
     assert first["k"] == second["k"] and first["v"] == second["v"]
     assert len(calls) == 1
+    assert all(Path(second[kind]).read_bytes() == originals[kind] for kind in ("k", "v"))
 
 
 def test_missing_one_default_file_regenerates_coherent_pair(model, tmp_path):
@@ -479,8 +487,8 @@ elif args[:2] == ["-m", "vllm.entrypoints.cli.main"]:
     assert result.returncode == (17 if calibration_fails else 0), result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     modules = [args[1] for args in calls if args[0] == "-m"]
-    expected = ["pip", "oscar_ascend.check", "oscar_ascend.prepare_rotations"]
+    expected = ["pip", "oscar_ascend.prepare_rotations"]
     if not calibration_fails:
-        expected += ["oscar_ascend.check", "vllm.entrypoints.cli.main"]
+        expected += ["vllm.entrypoints.cli.main"]
     assert modules == expected
     assert not list(tmp_path.glob("oscar-rotation-paths.*"))

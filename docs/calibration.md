@@ -2,6 +2,9 @@
 
 在已有目标 NPU 环境中，`bash scripts/serve.sh` 完成安装扩展、检查 `.pt`、
 缺失时校准、校验及启动。无需手动提供 rotation 路径。
+v0.2.5 的启动流程不调用环境预检 `oscar_ascend.check`。
+该版本修复正式加载 rotation 时默认 BF16 与 FP32 校验矩阵的 dtype 冲突；
+已有有效 `.pt` 和缓存指纹保持兼容，无需重新生成。
 **所有运行入口固定 `ASCEND_RT_VISIBLE_DEVICES=4,5,6,7`**，并在 NPU 库导入前生效。
 校准使用 TP4，进程内逻辑 rank0 使用物理卡4；物理卡0..3不属于本项目。
 从 v0.2.4 起，脚本、Python 校准入口及其子进程在导入 Torch/vLLM 前固定

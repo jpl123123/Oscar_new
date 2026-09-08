@@ -36,12 +36,17 @@ EngineCore/TP worker 启动新解释器，避免多线程父进程 fork 后继�
 
 启动脚本依次执行：
 
-1. 安装当前外部扩展，检查目标运行环境与后四卡可见性。
+1. 安装当前外部扩展。
 2. 按模型指纹和校准数据配置查找 K/V `.pt`，校验模型归属、层号、D256 和正交性。
 3. 文件不存在或自动缓存失效时，加载同一 W8A8 模型，使用原生 BF16 KV 做两遍校准，
    在 NPU 上计算 QQT/SST、特征分解和 `U H Pbr`，生成 K/V `.pt`。
 4. 验证生成结果、保存缓存，释放校准模型与进程的显存。
 5. 用生成或复用的 `.pt` 启动 OSCAR 服务。
+
+从 v0.2.5 起，启动脚本不再调用 `oscar_ascend.check`，直接准备矩阵并启动服务。
+同时修复正式加载模型时默认 BF16 导致的 `Float did not match BFloat16`：
+rotation 正交性比较显式使用矩阵的 FP32 dtype 与 CPU 设备，再转为 NPU BF16。
+已有有效 `.pt` 可继续复用，更新本版本不改变缓存指纹，无需删除或重做校准。
 
 默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
 首次运行需要额外校准时间，后续启动会直接复用有效缓存。
@@ -59,7 +64,7 @@ EngineCore/TP worker 启动新解释器，避免多线程父进程 fork 后继�
 `VLLM_OSCAR_V_ROTATION_PATH`。显式指定的已有文件如果无效会报错并保留原文件；
 自动缓存损坏则重新校准。生成失败或矩阵校验失败时，脚本停止，不启动服务。
 
-脚本仅安装当前外部包并校验环境，不安装/替换 vLLM、torch_npu 或 Triton。
+脚本仅安装当前外部包，不安装/替换 vLLM、torch_npu 或 Triton。
 `PYTHON_BIN` 可指向已有虚拟环境 Python；`MODEL`、`PORT` 可覆盖默认值。
 默认保留用户的 TP4、262144 context、MTP3、async 和 FULL_DECODE_ONLY 参数。
 只预览命令：`DRY_RUN=1 bash scripts/serve.sh`。
@@ -71,8 +76,9 @@ EngineCore/TP worker 启动新解释器，避免多线程父进程 fork 后继�
 
 GitHub 仓库提供外部适配代码，原生参考树用
 `oscar_ascend/upstream_fingerprints.json` 记录开发参考指纹，不作为子模块分发。
-运行时源码差异记录在预检报告的 `source_audit` 中，不因构建标签或整文件哈希不同
-直接拒绝。v0.2.3 的接口预检只用 AST 读取已安装源码中的方法参数与元数据字段，
+单独运行可选诊断工具 `oscar_ascend.check` 时，源码差异记录在报告的 `source_audit` 中，
+不因构建标签或整文件哈希不同直接拒绝。
+v0.2.3 的接口预检只用 AST 读取已安装源码中的方法参数与元数据字段，
 不导入原生 attention/device/ops 模块，不主动触发 Ascend patch 初始化。
 实际类参数在挂钩时校验，KV geometry 在绑定原生 Tensor 时校验。
 `--sources-only` 保留严格哈希审计，仅用于维护本地只读参考树。

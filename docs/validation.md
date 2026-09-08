@@ -9,7 +9,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **95 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **108 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -55,6 +55,16 @@ v0.2.4 新增：所有入口及子进程在导入 Torch/vLLM 前强制 spawn，�
 后台线程，再创建子进程；两层均以 spawn 启动，父进程标记没有被继承，子进程 Torch
 梯度计算结果正常。该测试证明进程隔离行为，不等于在目标 TorchNPU/CANN 上复现并消除断言。
 
+v0.2.5 基于 `207d2d4`：用户反馈真机已成功生成 `.pt`，正式服务加载 rotation 时出现
+`Float did not match BFloat16`。参考源码 `model_loader/base_loader.py` 的
+`process_weights_after_loading` 在 `set_default_torch_dtype(model_config.dtype)` 内执行，
+导致没有显式 dtype 的 `torch.eye` 继承 BF16，与加载的 FP32 rotation 冲突。
+本地先用同一 BF16 默认上下文复现相同异常，再显式指定单位矩阵的 dtype 和设备。
+回归覆盖 FP32/BF16 默认 dtype、CPU/meta 默认设备、无效矩阵拒绝以及已有 K/V 文件
+字节不变且不再次生成。移除 `serve.sh` 的两次环境预检调用，脚本控制流程测试确认
+安装、准备矩阵、启动服务的顺序，仍覆盖继承错误卡号与 fork 的情况。
+这些结果验证此次 dtype 修复与控制流程；没有登录 node93 验证修复后的完整服务启动。
+
 ## 尚未运行的必要检查
 
 - 实际 Triton Ascend 编译与执行；独立 NPU tests 包含旋转 stride、INT2 bytes、
@@ -62,7 +72,8 @@ v0.2.4 新增：所有入口及子进程在导入 Torch/vLLM 前强制 spawn，�
   不同请求数/页表的 NPUGraph replay，以及 metadata 固定地址测试。
 - 指定 Qwen3.5-27B-w8a8-mtp 模型的四卡启动、混合 GDN/FULL、MTP、async 和图模式。
 - Qwen3.5-27B 专属离线校准矩阵的现场校验及端到端质量测试。
-- 自动生成路径中 Triton 协方差、FP32 Jacobi、Hadamard/Pbr 和双遍真实模型运行。
+- 自动生成路径的独立 NPU 测试：用户已反馈真机生成 `.pt` 成功，
+  本地没有执行 Triton 协方差、FP32 Jacobi、Hadamard/Pbr 或双遍真实模型运行。
 - 同请求集、相同输出长度、相同硬件的三轮配对 benchmark 和 NPU profiler。
 
 没有生成或填充任何虚构 NPU 性能数据。“不得更慢”尚未证明。

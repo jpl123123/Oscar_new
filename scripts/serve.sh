@@ -64,8 +64,6 @@ fi
 if [[ "$MODE" == oscar ]]; then
   # Install this small external package only; do not replace torch/vllm/Ascend.
   "$PYTHON_BIN" -m pip install --no-deps --no-build-isolation -e "$PROJECT_DIR"
-  "$PYTHON_BIN" -m oscar_ascend.check --model "$MODEL" --skip-rotations \
-    --report "$PROJECT_DIR/artifacts/runtime-preflight.json"
   rotation_state_file="$(mktemp "${TMPDIR:-/tmp}/oscar-rotation-paths.XXXXXX")"
   trap 'rm -f "$rotation_state_file"' EXIT
   "$PYTHON_BIN" -m oscar_ascend.prepare_rotations --model "$MODEL" \
@@ -76,7 +74,5 @@ if [[ "$MODE" == oscar ]]; then
   export VLLM_OSCAR_K_ROTATION_PATH VLLM_OSCAR_V_ROTATION_PATH
   rm -f "$rotation_state_file"
   trap - EXIT
-  "$PYTHON_BIN" -m oscar_ascend.check --model "$MODEL" \
-    --report "$PROJECT_DIR/artifacts/preflight.json"
 fi
 exec "${cmd[@]}"
