@@ -11,6 +11,7 @@ import torch
 
 from oscar_ascend import startup
 from oscar_ascend.config import percentile_selection
+from oscar_ascend.layout import CacheLayout
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,14 +35,24 @@ def metadata_builder(monkeypatch):
         def device(self):
             return SimpleNamespace(type="npu")
 
+    def cpu_tasks(
+        qstarts, counts, tasks, task_count, max_reqs, query_tile, num_reqs=None, **kwargs
+    ):
+        from tests.test_tasks import prepare_tasks_cpu
+
+        prepare_tasks_cpu(
+            qstarts, counts, tasks, task_count, max_reqs, query_tile, num_reqs, **kwargs
+        )
+
     states = SimpleNamespace(PrefillNoCache=0, DecodeOnly=1, SpecDecoding=2)
     modules = {
         "vllm.v1.attention.backend": {
             "AttentionMetadataBuilder": Base,
-            "AttentionCGSupport": SimpleNamespace(ALWAYS=1),
+            "AttentionCGSupport": SimpleNamespace(ALWAYS=1, UNIFORM_BATCH=2),
         },
         "vllm_ascend.attention.attention_v1": {"AscendAttentionState": states},
         "oscar_ascend.backend": {"OscarAttentionImpl": Impl},
+        "oscar_ascend.kernels": {"prepare_tasks": cpu_tasks},
     }
     for name, attributes in modules.items():
         module = ModuleType(name)
@@ -115,8 +126,9 @@ def test_warmup_cannot_snapshot_slots_before_native_invalidates_them(metadata_bu
     meta = Runner()._dummy_run(4)
     assert meta.is_dummy and not meta.initial_prefill
     assert meta.counts.tolist() == [0, 0]
-    assert meta.slot_mapping.eq(-1).all()
-    assert meta.query_start_loc.eq(0).all() and meta.seq_lens.eq(0).all()
+    assert meta.task_count.item() == 0
+    # Existing private buffers can remain stale, but zero counts mask them.
+    assert meta.slot_mapping[:4].eq(0).all()
     assert not startup.in_dummy_run()
 
 
@@ -126,12 +138,21 @@ def test_capture_has_no_live_cache_access_and_real_build_restores_same_buffers(m
     cm.slot_mapping.fill_(2**30)
     cm.block_table_tensor.fill_(2**30)
     captured = builder.build_for_cudagraph_capture(cm)
-    fields = ("query_start_loc", "seq_lens", "block_tables", "slot_mapping", "counts")
+    fields = (
+        "query_start_loc",
+        "seq_lens",
+        "block_tables",
+        "slot_mapping",
+        "counts",
+        "tasks",
+        "task_count",
+    )
     pointers = {name: getattr(captured, name).data_ptr() for name in fields}
     assert captured.counts.tolist() == [0, 0]
     assert captured.block_tables.eq(0).all()
     assert captured.slot_mapping.eq(-1).all()
     assert captured.is_dummy and not startup.in_dummy_run()
+    assert captured.task_count.item() == 0
 
     cm.block_table_tensor.copy_(torch.arange(6, 12, dtype=torch.int32)[None, :])
     cm.slot_mapping.copy_(torch.arange(768, 772, dtype=torch.int32))
@@ -144,6 +165,7 @@ def test_capture_has_no_live_cache_access_and_real_build_restores_same_buffers(m
     assert real.seq_lens[0] == 12
     assert real.slot_mapping[:4].tolist() == [768, 769, 770, 771]
     assert real.block_tables[0, :6].tolist() == list(range(6, 12))
+    assert real.task_count.item() == 1 and real.tasks[0].tolist() == [0, 0]
 
 
 def test_dummy_scope_and_watchdog_are_cleaned_after_failure(monkeypatch, tmp_path):
@@ -179,6 +201,24 @@ def test_dummy_scope_and_watchdog_are_cleaned_after_failure(monkeypatch, tmp_pat
     assert events[1] == "cancel"
 
 
+def test_metadata_copies_only_columns_reachable_by_host_upper_bound(metadata_builder):
+    builder, cm = metadata_builder
+    cm.block_table_tensor.copy_(torch.arange(6, 12, dtype=torch.int32)[None, :])
+    builder.build(0, cm)
+    pointer = builder.table.data_ptr()
+    cm.block_table_tensor.fill_(50)
+    cm.max_seq_len = 128
+    builder.build(0, cm)
+    assert builder.table[0, :6].tolist() == [50, 7, 8, 9, 10, 11]
+    cm.block_table_tensor.fill_(60)
+    cm.max_seq_len = 129
+    builder.build(0, cm)
+    assert builder.table[0, :6].tolist() == [60, 60, 8, 9, 10, 11]
+    cm.max_seq_len = 768
+    builder.build(0, cm)
+    assert builder.table[0, :6].eq(60).all() and builder.table.data_ptr() == pointer
+
+
 def test_kernel_trace_preserves_values_and_reports_first_launch_only(monkeypatch, capsys):
     monkeypatch.setenv("OSCAR_STARTUP_TRACE", "1")
     monkeypatch.setattr(startup, "_kernel_proxy", None)
@@ -196,7 +236,17 @@ def test_kernel_trace_preserves_values_and_reports_first_launch_only(monkeypatch
     value = torch.zeros(4, 1, 256)
     rotation = torch.eye(256)
     assert proxy.rotate(value, rotation) is value and proxy.rotate(value, rotation) is value
-    args = (value,) + (None,) * 7 + (8,)
+    args = (
+        value,
+        None,
+        None,
+        None,
+        None,
+        SimpleNamespace(max_num_reqs=8),
+        CacheLayout(768),
+        1 / 16,
+        8,
+    )
     assert proxy.attention_partials(*args, raw=False) is value
     assert proxy.attention_partials(*args, raw=True) is value
     output = capsys.readouterr().out

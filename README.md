@@ -70,6 +70,23 @@ v0.2.8 消除 GDN 捕获 metadata 的一次冗余 NPU→CPU 回读：接受 toke
 前序设备工作阻塞已经解决。启动日志仅报告 `capture_model returned`，不宣称
 真实请求 graph replay 或精度验收通过。
 
+v0.3.0 的执行与启动优化：
+
+- 在 NPU 上按批次建立紧凑任务表，供所有 history/raw split 使用；attention program
+  循环处理任务，避免每个 program 重新扫描全部请求。默认 program budget 为32，
+  512-token、8-split history 的 launch grid 从2048个 program 降为32个。
+- INT2 每向量读取64个 packed bytes，然后在寄存器解出256个值，避免重复字节地址。
+- 页表复制融合进任务准备 kernel，仅复制原生 host 长度上界可达的列，保留固定
+  buffer 地址/stride；dummy 不再反复清零最大上下文的整张页表。
+- Jacobi 残差在 NPU 汇总，host 每轮判断仅回读一个 scalar，已有 `.pt` 不重算。
+- OSCAR 启动配置使用 `mode=0`、`enable_npugraph_ex=false`，跳过现场重复的 FX/AOT
+  编译，运行时保持 `FULL_DECODE_ONLY`。外部 hook 同时修正原生 `_use_aclgraph`
+  对 FX 的依赖，使图参数初始化保持启用；显式 eager 仍关闭 graph。
+
+这些是已实现并完成本地回归的候选优化。program 数、字节地址和复制范围的减少
+不等于已经测得端到端加速；直接 FULL graph 的真机捕获/请求 replay 仍需现场验证。
+`OSCAR_ASCEND_PROGRAM_BUDGET` 可选择8/16/32/64，默认32；实际最佳值需 profiler 测量。
+
 默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
 首次运行需要额外校准时间，后续启动会直接复用有效缓存。
 默认校准使用随包提供的16段中英混合文本，每段最多1024 tokens，无需下载数据集。
@@ -89,6 +106,7 @@ v0.2.8 消除 GDN 捕获 metadata 的一次冗余 NPU→CPU 回读：接受 toke
 脚本仅安装当前外部包，不安装/替换 vLLM、torch_npu 或 Triton。
 `PYTHON_BIN` 可指向已有虚拟环境 Python；`MODEL`、`PORT` 可覆盖默认值。
 默认保留用户的 TP4、262144 context、MTP3、async 和 FULL_DECODE_ONLY 参数。
+`MODE=oscar` 使用直接运行时图路径；两个 native 对照模式保留原来的 FX 配置。
 只预览命令：`DRY_RUN=1 bash scripts/serve.sh`。
 
 默认模型目录为 `/softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp`，

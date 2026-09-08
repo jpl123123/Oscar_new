@@ -21,6 +21,7 @@ class OscarConfig:
     v_rotation_path: str = ""
     block_n: int = 32
     queries_per_tile: int = 4
+    program_budget: int = 32
 
     def __post_init__(self):
         if self.head_dim != 256 or self.group_size < self.head_dim:
@@ -41,6 +42,8 @@ class OscarConfig:
             raise ValueError("OSCAR_ASCEND_BLOCK_N must be 16 or 32")
         if self.queries_per_tile not in (1, 2, 4):
             raise ValueError("OSCAR_ASCEND_QUERY_TILE must be 1, 2 or 4")
+        if self.program_budget not in (8, 16, 32, 64):
+            raise ValueError("OSCAR_ASCEND_PROGRAM_BUDGET must be 8, 16, 32 or 64")
 
     @property
     def data_bytes(self):
@@ -78,6 +81,7 @@ class OscarConfig:
             v_rotation_path=os.getenv("VLLM_OSCAR_V_ROTATION_PATH", ""),
             block_n=int(os.getenv("OSCAR_ASCEND_BLOCK_N", "32")),
             queries_per_tile=int(os.getenv("OSCAR_ASCEND_QUERY_TILE", "4")),
+            program_budget=int(os.getenv("OSCAR_ASCEND_PROGRAM_BUDGET", "32")),
         )
 
 
@@ -95,3 +99,13 @@ def percentile_selection(ratio, dim=256):
     lower = math.floor(index)
     upper = math.ceil(index)
     return dim - 1 - lower, dim - 1 - upper, index - lower
+
+
+def task_capacity(tokens, requests, query_tile):
+    return min(tokens, (tokens + query_tile - 1) // query_tile + requests - 1)
+
+
+def attention_task_groups(tokens, requests, kv_heads, splits, config):
+    """A small launch grid; each program loops over the device-side task list."""
+    parallel_groups = max(1, (config.program_budget + kv_heads * splits - 1) // (kv_heads * splits))
+    return max(1, min(task_capacity(tokens, requests, config.queries_per_tile), parallel_groups))

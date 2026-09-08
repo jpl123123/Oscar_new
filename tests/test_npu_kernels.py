@@ -17,7 +17,7 @@ if not torch.npu.is_available():
     pytest.skip("Ascend NPU unavailable", allow_module_level=True)
 
 from oscar_ascend import kernels  # noqa: E402
-from oscar_ascend.config import OscarConfig  # noqa: E402
+from oscar_ascend.config import OscarConfig, task_capacity  # noqa: E402
 from oscar_ascend.layout import CacheLayout  # noqa: E402
 from tests.oracle import hybrid_reference, packed_slots  # noqa: E402
 
@@ -58,6 +58,12 @@ def make_state(lengths, prefix_lengths, cfg=None, pages=20, max_reqs=8):
         slot_mapping=torch.tensor(slots, device="npu", dtype=torch.int64),
         num_reqs=len(lengths),
         max_num_reqs=max_reqs,
+        tasks=torch.empty(
+            (task_capacity(max(1, len(slots)), max_reqs, layout.config.queries_per_tile), 2),
+            device="npu",
+            dtype=torch.int32,
+        ),
+        task_count=torch.zeros(1, device="npu", dtype=torch.int32),
     )
     return layout, raw, history, window, meta, tables
 
@@ -134,6 +140,14 @@ def prepare_prefix(k, v, rk, rv, history, window, meta, tables, layout, prefixes
 
 
 def run_attention(q, k, v, rk, rv, history, window, meta, layout, splits):
+    kernels.prepare_tasks(
+        meta.query_start_loc,
+        meta.counts,
+        meta.tasks,
+        meta.task_count,
+        meta.max_num_reqs,
+        layout.config.queries_per_tile,
+    )
     kr, vr = kernels.rotate(k, rk), kernels.rotate(v, rv)
     kernels.store_int2(kr, vr, history, meta.slot_mapping, meta.counts, layout)
     qp = kernels.rotate(q, rk)
@@ -313,14 +327,30 @@ def test_metadata_builder_capture_entry_and_fixed_pointers():
     assert captured.is_dummy and captured.counts.cpu().tolist() == [0, 0]
     pointers = [
         getattr(captured, attr).data_ptr()
-        for attr in ("query_start_loc", "seq_lens", "slot_mapping", "block_tables", "counts")
+        for attr in (
+            "query_start_loc",
+            "seq_lens",
+            "slot_mapping",
+            "block_tables",
+            "counts",
+            "tasks",
+            "task_count",
+        )
     ]
     cm.attn_state = AscendAttentionState.SpecDecoding
     cm.seq_lens.fill_(1200)
     replay = builder.build(0, cm)
     assert pointers == [
         getattr(replay, attr).data_ptr()
-        for attr in ("query_start_loc", "seq_lens", "slot_mapping", "block_tables", "counts")
+        for attr in (
+            "query_start_loc",
+            "seq_lens",
+            "slot_mapping",
+            "block_tables",
+            "counts",
+            "tasks",
+            "task_count",
+        )
     ]
     assert replay.seq_lens[0].item() == 1200  # Test-only assertion, outside serving.
     assert not replay.is_dummy and replay.counts.cpu().tolist() == [1, 4]

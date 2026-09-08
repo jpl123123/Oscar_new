@@ -30,17 +30,26 @@ export VLLM_OSCAR_RECENT_TOKENS="${VLLM_OSCAR_RECENT_TOKENS:-256}"
 export VLLM_OSCAR_K_CLIP_RATIO="${VLLM_OSCAR_K_CLIP_RATIO:-0.96}"
 export VLLM_OSCAR_V_CLIP_RATIO="${VLLM_OSCAR_V_CLIP_RATIO:-0.92}"
 
+compile_mode=""
+additional_config='{"enable_cpu_binding":true}'
+if [[ "$MODE" == oscar ]]; then
+  # Runtime ACLGraph capture is independent of Dynamo/npugraph_ex compilation.
+  # Keep FULL decode capture while avoiding FX/AOT recompile and extra graph wrappers.
+  compile_mode='"mode":0,'
+  additional_config='{"enable_cpu_binding":true,"ascend_compilation_config":{"enable_npugraph_ex":false,"enable_static_kernel":false}}'
+fi
+
 cmd=("$PYTHON_BIN" -m vllm.entrypoints.cli.main serve "$MODEL"
   --served-model-name qwen3.5 --host 0.0.0.0 --port "$PORT"
   --data-parallel-size 1 --tensor-parallel-size 4
   --max-model-len "${MAX_MODEL_LEN:-262144}"
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-16384}"
   --max-num-seqs "${MAX_NUM_SEQS:-128}" --gpu-memory-utilization 0.9
-  --compilation-config '{"cudagraph_capture_sizes":[1,4,8,12,16,24,32,48,56,64,72,84,96,108,112,128,160,172,196,200,212,232,272,288,312,328,344,360,384,400,416,432,448,480,512],"cudagraph_mode":"FULL_DECODE_ONLY"}'
+  --compilation-config "{${compile_mode}\"cudagraph_capture_sizes\":[1,4,8,12,16,24,32,48,56,64,72,84,96,108,112,128,160,172,196,200,212,232,272,288,312,328,344,360,384,400,416,432,448,480,512],\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}"
   --speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":true}'
   --trust-remote-code --async-scheduling --allowed-local-media-path /
   --quantization ascend --mm-processor-cache-gb 0
-  --additional-config '{"enable_cpu_binding":true}'
+  --additional-config "$additional_config"
   --mamba-cache-dtype bfloat16 --mamba-ssm-cache-dtype bfloat16
   --hf-overrides '{"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":4.0,"original_max_position_embeddings":262144}}}')
 

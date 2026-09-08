@@ -184,6 +184,15 @@ def test_launch_command_preserves_mtp_and_graph(mode, disabled):
     graph = json.loads(cmd[cmd.index("--compilation-config") + 1])
     assert spec == {"method": "qwen3_5_mtp", "num_speculative_tokens": 3, "enforce_eager": True}
     assert graph["cudagraph_mode"] == "FULL_DECODE_ONLY"
+    additional = json.loads(cmd[cmd.index("--additional-config") + 1])
+    if mode == "oscar":
+        assert graph["mode"] == 0
+        assert additional["ascend_compilation_config"] == {
+            "enable_npugraph_ex": False,
+            "enable_static_kernel": False,
+        }
+    else:
+        assert "mode" not in graph and "ascend_compilation_config" not in additional
     assert "--async-scheduling" in cmd and "--enforce-eager" not in cmd
 
 

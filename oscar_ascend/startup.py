@@ -37,6 +37,33 @@ def trace_enabled():
     return os.getenv("OSCAR_STARTUP_TRACE", "1") != "0"
 
 
+def uses_direct_full_graph(runner):
+    config = getattr(runner, "compilation_config", None)
+    model = getattr(runner, "model_config", None)
+    return (
+        config is not None
+        and config.mode == 0
+        and config.cudagraph_mode.has_full_cudagraphs()
+        and not getattr(model, "enforce_eager", False)
+    )
+
+
+def configure_graph_runtime(runner):
+    """Set native operator mode before the first profile when FX is bypassed."""
+    if getattr(runner, "_oscar_graph_runtime_configured", False):
+        return
+    if not uses_direct_full_graph(runner):
+        return
+    import torch
+
+    # Normally npugraph_ex_compile performs this setup; we intentionally skip
+    # that compiler and use the native runtime ACLGraph wrapper directly.
+    torch.npu.set_compile_mode(jit_compile=False)
+    runner.use_aclgraph = True
+    runner._oscar_graph_runtime_configured = True
+    _log("runtime FULL graph enabled; FX/npugraph_ex disabled; acceptance not established")
+
+
 def _log(message):
     print(f"[OSCAR startup pid={os.getpid()}] {message}", flush=True)
 
@@ -59,8 +86,14 @@ def trace_kernels(kernels, synchronize=None):
                     x, rotation = args
                     variant = (tuple(x.shape[1:]), x.stride(), rotation.stride())
                 if name == "attention_partials":
+                    from .config import attention_task_groups
+
                     label += ".raw" if kwargs["raw"] else ".history"
-                    variant = (args[8],)
+                    meta, layout, splits = args[5], args[6], args[8]
+                    groups = attention_task_groups(
+                        args[0].shape[0], meta.max_num_reqs, layout.kv_heads, splits, layout.config
+                    )
+                    variant = (splits, groups)
                 key = (label, variant)
                 if key in _traced_ops:
                     return function(*args, **kwargs)
@@ -115,11 +148,22 @@ def install_runner_hooks():
     if not {"num_tokens", "is_graph_capturing"} <= signature.parameters.keys():
         raise RuntimeError("Unsupported NPUModelRunner._dummy_run signature")
     original_capture = runner_class.capture_model
+    original_use_aclgraph = getattr(runner_class, "_use_aclgraph", None)
+    if original_use_aclgraph is not None:
+
+        @functools.wraps(original_use_aclgraph)
+        def use_aclgraph(runner):
+            if uses_direct_full_graph(runner):
+                return True
+            return original_use_aclgraph(runner)
+
+        runner_class._use_aclgraph = use_aclgraph
 
     @functools.wraps(original_dummy)
     def dummy(runner, *args, **kwargs):
         # A platform may finish loading its GDN builder after the initial probe.
         install_gdn_capture_hook()
+        configure_graph_runtime(runner)
         bound = signature.bind(runner, *args, **kwargs)
         bound.apply_defaults()
         capturing = bound.arguments["is_graph_capturing"]

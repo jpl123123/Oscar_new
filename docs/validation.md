@@ -10,7 +10,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **137 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **170 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -127,6 +127,31 @@ v0.2.8 消除 GDN capture metadata 的冗余 D2H，并纠正验收表述：
 
 当前状态仍为真机启动验收未通过。本地137项通过，两个 NPU 模块跳过。
 详细 CPU 边界、尚未优化的校准回读与诊断同步见 [CPU/同步审计](cpu-audit.md)。
+
+v0.3.0 基于 `aeadd39`，优化调度/数据搬运并使能直接运行时 FULL graph：
+
+- 紧凑任务表在 NPU 一次生成，history/raw 使用固定 task buffer 与 task_count。
+  program 以固定步长循环任务；CPU 执行真实 Triton 函数体，覆盖空请求、零长度
+  padding、129请求容量、截断 active tokens、QT=1/2/4 和跨 program 的任务唯一归属。
+  多请求 ragged raw attention 与独立因果 dense reference 一致。
+- 默认512-token/8-split场景 launch program 从2048降到32，单独测试该数量变化。
+  它不能被解释为64倍吞吐提升。INT2 解包实际源函数体与 packed bytes 对照逐值相等，
+  读取64字节数据与4字节元信息，不构造256个重复 packed-byte load 地址。
+- 页表复制融合进 NPU 任务准备 kernel，按 native host 长度上界限制列范围；
+  回归检查128/129 token边界、尾部列不被无谓覆盖、固定地址与真实 build 更新。
+  dummy 仅清 active counts，不重复清完整最大长度的页表。
+- 校准残差汇总源函数体与旧 host reduction 对照相等，NaN/Inf 仍拒绝；
+  host 每次收敛判断仅回读一个 scalar。现有 rotation/cache 指纹不变。
+- 启动配置为 mode=0、FULL_DECODE_ONLY、enable_npugraph_ex=false，关闭FX/AOT，
+  保留原生运行时 ACLGraph。两个 native 对照模式保留原配置。
+  测试执行真实参考 `_use_aclgraph` predicate，复现mode=0下False，验证外部hook
+  使直接FULL模式返回True且显式eager仍返回False；核对原生FULL wrapper、capture
+  入口仅依据cudagraph_mode，CANN jit_compile=False设置只执行一次。
+- NPU测试代码适配任务表并保留真实graph replay、MTP回滚、非顺序页表等场景；
+  这些NPU测试在本地仍跳过。170项CPU回归、ruff、shell语法和diff检查通过。
+
+没有可报告的真机延迟、吞吐或完整graph成功记录。关闭FX可能失去某些fusion收益，
+新program budget的最佳值也需要实际profiler。当前不能宣称所有慢操作已消除。
 
 ## 尚未运行的必要检查
 

@@ -223,6 +223,33 @@ inactive task 使用安全请求下标，Q、页表、KV 和输出的实际访�
 图外首次 kernel 配置在提交前排空已有工作、提交后等待当前流完成，
 用以区分前序工作阻塞与当前 kernel 阻塞；捕获期和正常推理不执行这些同步。
 超时栈写入每个 worker 独立的文件，记录器退出时取消计时并关闭文件。
+
+### v0.3.0 紧凑任务与直接 FULL graph
+
+metadata builder 新增固定地址 `tasks[capacity,2]` 和 `task_count`。
+`_prepare_tasks_kernel` 从 NPU query boundaries 计算每个请求的 `ceil(query_len/QT)`，
+将 `(request_id, query_offset)` 写入紧凑任务表；同时用直接的 NPU load/store
+复制页表可达列。长度上界使用原生 scheduler 已有的 host 整数 `max_seq_len`，
+缺失时保守复制全部列，不回读设备长度。所有输出在同一 stream 上先于 replay 更新。
+
+attention 的第0维 grid 最多为 `ceil(program_budget/(kv_heads*splits))`，
+每个 program 以 grid 大小为步长遍历设备任务表，任务不依赖原请求数排序。
+history 和 raw 共享同一任务表；每个有效 query/split 仍写自己的 partial 槽，
+无需原子操作。空 lane 保留一个掩码迭代，program 上限减少了 dummy 的额外工作量。
+512-token、129-request容量、QT=4、splits=8 时，旧 grid 为256×8=2048，
+新 grid 为4×8=32。这是 launch 数的变化，不是实测64倍速度提升。
+
+INT2 load 将 `(BN,D)` 重复字节地址改为 `(BN,D/4)` 唯一字节，再扩展四个2-bit code。
+scale/zero 的FP16存储、解包位序和BF16转换顺序保持不变。Jacobi 残差通过独立
+Triton summary kernel 汇总，host 只接收停止/继续判断所需的一个浮点值。
+
+启动时禁用 FX/npugraph_ex，`cudagraph_mode` 保持 FULL_DECODE_ONLY，
+`model_config.enforce_eager` 默认False。原生 FULL wrapper 与 capture 入口均由
+cudagraph_mode 控制，但 `_use_aclgraph` 还检查 FX mode；外部 hook 为直接 FULL
+模式放开这一条件，保证原生 graph params 初始化，其他模式调用原逻辑。
+首次profile前设置 `torch.npu.set_compile_mode(jit_compile=False)`，补上原本由
+npugraph_ex compiler执行的CANN配置。此路径可能失去FX fusion收益，需端到端
+对照测试，不能仅凭更快启动推断稳态吞吐更高。
 需通过真实 NPU 图回放测试后才可认定图兼容。
 
 配置通过 PR 风格环境变量，启动脚本保留原始服务参数并提供 native 模式。

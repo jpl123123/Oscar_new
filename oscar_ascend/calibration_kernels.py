@@ -4,6 +4,8 @@ No raw Q/K/V is dumped to the host. Only convergence scalars and final rotation
 artifacts leave the device. The covariance objectives follow OSCAR qqt/sst.
 """
 
+import math
+
 import torch
 import triton
 import triton.language as tl
@@ -248,6 +250,24 @@ def _sort_eigenpairs(A, U, SortedU, Eigenvalues, D: tl.constexpr):
 
 
 @triton.jit
+def _residual_summary(Stats, Summary, BATCH: tl.constexpr, TILES: tl.constexpr, BB: tl.constexpr):
+    batches = tl.arange(0, BB)
+    tiles = tl.arange(0, TILES)
+    offsets = (batches[:, None] * TILES + tiles[None, :]) * 2
+    off = tl.load(Stats + offsets, batches[:, None] < BATCH, 0)
+    diag = tl.load(Stats + offsets + 1, batches[:, None] < BATCH, 0)
+    invalid = (
+        (off != off)
+        | (diag != diag)
+        | (tl.abs(off) == float("inf"))
+        | (tl.abs(diag) == float("inf"))
+    )
+    bad = tl.sum(tl.sum(invalid.to(tl.int32), 1), 0) > 0
+    ratio = tl.max(off, 1) / tl.maximum(tl.max(diag, 1), 1.0e-30)
+    tl.store(Summary, tl.where(bad, float("inf"), tl.max(ratio, 0)))
+
+
+@triton.jit
 def _hadamard_compose(U, R, D: tl.constexpr, BITS: tl.constexpr):
     batch, row = tl.program_id(0), tl.program_id(1)
     offsets = tl.arange(0, D)
@@ -275,6 +295,7 @@ def calibrated_rotations(covariances, max_sweeps=12, tolerance=1e-6):
     u, next_u = torch.empty_like(a), torch.empty_like(a)
     cs = torch.empty((batch, dim), dtype=torch.float32, device=a.device)
     stats = torch.empty((batch, dim // 32, 2), dtype=torch.float32, device=a.device)
+    summary = torch.empty((), dtype=torch.float32, device=a.device)
     _initialize[(batch, triton.cdiv(dim * dim, 1024))](covariances, a, u, dim)
     residual = float("inf")
     for sweep in range(max_sweeps):
@@ -284,13 +305,13 @@ def calibrated_rotations(covariances, max_sweeps=12, tolerance=1e-6):
             u, next_u = next_u, u
         if (sweep + 1) % 2 == 0 or sweep + 1 == max_sweeps:
             _residual[(batch, dim // 32)](a, stats, dim)
-            # Startup diagnostic only: at most 512 scalars, not Q/K/V or matrices.
-            summary = stats.cpu().amax(1)
-            residual = float((summary[:, 0] / summary[:, 1].clamp_min(1e-30)).max())
+            _residual_summary[(1,)](stats, summary, batch, dim // 32, triton.next_power_of_2(batch))
+            # Only the final stop/continue scalar crosses to the host.
+            residual = summary.item()
             print(
                 f"[OSCAR calibration] Jacobi sweep {sweep + 1}: residual={residual:.3e}", flush=True
             )
-            if not torch.isfinite(summary).all():
+            if not math.isfinite(residual):
                 raise RuntimeError("Nonfinite calibration covariance; rotations not published")
             if residual < tolerance:
                 break

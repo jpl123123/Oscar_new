@@ -7,7 +7,7 @@ import torch
 from vllm.v1.attention.backend import AttentionCGSupport, AttentionMetadataBuilder
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 
-from .config import OscarConfig
+from .config import OscarConfig, task_capacity
 from .layout import CacheLayout
 from .startup import dummy_run_scope, in_dummy_run
 
@@ -29,6 +29,8 @@ class OscarMetadata:
     actual_seq_lengths_q: list | None = None
     causal: bool = True
     is_dummy: bool = False
+    tasks: torch.Tensor | None = None
+    task_count: torch.Tensor | None = None
 
 
 class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
@@ -46,6 +48,7 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
                 )
         speculative = vllm_config.speculative_config
         cfg = OscarConfig.from_env(speculative.num_speculative_tokens if speculative else 0)
+        self.query_tile = cfg.queries_per_tile
         self.layout = CacheLayout(kv_cache_spec.block_size, kv_cache_spec.num_kv_heads, config=cfg)
         self.reorder_batch_threshold = cfg.speculative_tokens + 1
         scheduler = vllm_config.scheduler_config
@@ -61,11 +64,17 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
         self.table = torch.zeros((self.max_reqs, max_blocks), dtype=torch.int32, device=device)
         self.slots = torch.full((self.max_tokens,), -1, dtype=torch.int64, device=device)
         self.counts = torch.zeros(2, dtype=torch.int32, device=device)
+        self.tasks = torch.empty(
+            (task_capacity(self.max_tokens, self.max_reqs, self.query_tile), 2),
+            dtype=torch.int32,
+            device=device,
+        )
+        self.task_count = torch.zeros(1, dtype=torch.int32, device=device)
 
     @classmethod
     def get_cudagraph_support(cls, vllm_config, kv_cache_spec):
         # vLLM dispatch capability, not a claim that NPU graph acceptance passed.
-        return AttentionCGSupport.ALWAYS
+        return AttentionCGSupport.UNIFORM_BATCH
 
     def reorder_batch(self, input_batch, scheduler_output):
         return False
@@ -86,20 +95,25 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
             if getattr(cm, name).device.type != "npu":
                 raise ValueError(f"Expected NPU metadata for {name}")
         dummy = in_dummy_run()
+        copy_columns = 0
         if dummy:
             # Native warmup invalidates its slot mapping AFTER building metadata.
             # A private snapshot would miss that invalidation and write page zero
             # or stale slots. Dummy runs own no KV pages. Device-side counts mask
             # all cache accesses while still recording every kernel for replay.
-            self.qstarts.zero_()
-            self.seqs.zero_()
-            self.table.zero_()
-            self.slots.fill_(-1)
+            # No task/cache data is read when the two device counts are zero.
+            # Repeatedly clearing the full max-context table is unnecessary.
             self.counts.zero_()
         else:
             self.qstarts[: nr + 1].copy_(cm.query_start_loc[: nr + 1], non_blocking=True)
             self.seqs[:nr].copy_(cm.seq_lens[:nr], non_blocking=True)
-            self.table[:nr, :columns].copy_(cm.block_table_tensor[:nr], non_blocking=True)
+            # max_seq_len is the native scheduler's host upper bound, not a
+            # device read. Keep the fixed stride but copy only reachable columns.
+            max_seq_len = getattr(cm, "max_seq_len", None)
+            copy_columns = columns
+            if isinstance(max_seq_len, int):
+                block = self.layout.kernel_block_tokens
+                copy_columns = min(columns, max(1, (max_seq_len + block - 1) // block))
             self.slots[:nt].copy_(cm.slot_mapping[:nt], non_blocking=True)
             self.counts[0].fill_(nr)
             self.counts[1].fill_(nt)
@@ -113,6 +127,20 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
             if cm.query_start_loc_cpu.device.type != "cpu":
                 raise ValueError("query_start_loc_cpu must really be on CPU")
             query_ends = cm.query_start_loc_cpu[1 : nr + 1].tolist()
+        from .kernels import prepare_tasks
+
+        prepare_tasks(
+            self.qstarts,
+            self.counts,
+            self.tasks,
+            self.task_count,
+            self.max_reqs,
+            self.query_tile,
+            num_reqs=1 if dummy else nr,
+            source_table=cm.block_table_tensor,
+            table=self.table,
+            copy_columns=copy_columns,
+        )
         return OscarMetadata(
             self.qstarts,
             self.seqs,
@@ -128,6 +156,8 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
             initial,
             query_ends,
             is_dummy=dummy,
+            tasks=self.tasks,
+            task_count=self.task_count,
         )
 
     def build_for_cudagraph_capture(
