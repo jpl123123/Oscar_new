@@ -25,6 +25,11 @@ def is_draft_layer(prefix):
 
 def register():
     global _registered
+    if os.getenv("OSCAR_ASCEND_CALIBRATING", "0") == "1":
+        from .calibration_worker import install_hook
+
+        install_hook()
+        return
     if _registered or os.getenv("OSCAR_ASCEND_ENABLED", "0") != "1":
         return
 

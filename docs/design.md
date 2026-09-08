@@ -112,7 +112,8 @@ packed 每页122880 bytes，都装入各自393216-byte区域。
 
 ## 4. 数值算法与 Triton 伪代码
 
-离线输入为该模型 FULL 层的 Rk/Rv 正交矩阵。缺层、维度错误、非正交时拒绝启动，
+离线输入为该模型 FULL 层的 Rk/Rv 正交矩阵。v0.2.0 在缺失时自动执行两遍原生
+模型校准，方法和实现见 [自动校准说明](calibration.md)。缺层、维度错误、非正交时拒绝启动，
 不静默退化 identity，不使用 Qwen3-32B 的 D128 矩阵代替 D256。
 矩阵文件启动时读取 CPU 属于小型参数加载；运行期 K/V/Q 不转 CPU。
 
@@ -188,7 +189,9 @@ metadata builder 将 block table、seq_len、query_start、slot_mapping 和有�
 需通过真实 NPU 图回放测试后才可认定图兼容。
 
 配置通过 PR 风格环境变量，启动脚本保留原始服务参数并提供 native 模式。
-现场必须提供 `VLLM_OSCAR_K_ROTATION_PATH`、`VLLM_OSCAR_V_ROTATION_PATH`。
+启动脚本自动生成或复用 K/V rotation，并设置 `VLLM_OSCAR_K_ROTATION_PATH`、
+`VLLM_OSCAR_V_ROTATION_PATH`；用户不必手动填写。所有脚本与校准子进程在导入 NPU
+库之前固定 `ASCEND_RT_VISIBLE_DEVICES=4,5,6,7`，只允许物理后四卡。
 `--quantization ascend` 与 KV 扩展独立，不能强塞 `oscar_int2` 到 stock CacheDType。
 
 ## 7. 验证与性能判定

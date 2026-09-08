@@ -5,6 +5,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 
@@ -54,6 +55,7 @@ def check_model(path):
 
 
 def main():
+    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "4,5,6,7"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model")
     parser.add_argument(
@@ -62,6 +64,11 @@ def main():
         help="Read-only local source check: directory containing vllm and vllm-ascend",
     )
     parser.add_argument("--report", type=pathlib.Path)
+    parser.add_argument(
+        "--skip-rotations",
+        action="store_true",
+        help="Check the base NPU runtime before automatic rotation generation",
+    )
     args = parser.parse_args()
     report = {"status": "not_run", "npu_acceptance": "not_run"}
     try:
@@ -84,6 +91,7 @@ def main():
             report["versions"].update(
                 torch=torch.__version__, torch_npu=torch_npu.__version__, triton=triton.__version__
             )
+            report["physical_npu_devices"] = os.environ["ASCEND_RT_VISIBLE_DEVICES"]
             for package in ("vllm", "vllm-ascend"):
                 if report["versions"][package].split("+")[0] != "0.23.0":
                     raise ValueError(
@@ -96,8 +104,10 @@ def main():
                 for name in ("vllm", "vllm-ascend")
             }
             report["source_commits"] = verify_sources(roots)
-            if not torch.npu.is_available() or torch.npu.device_count() < 4:
-                raise ValueError("This launch requires at least 4 visible Ascend NPUs")
+            if not torch.npu.is_available() or torch.npu.device_count() != 4:
+                raise ValueError(
+                    "Expected exactly 4 visible NPUs after restricting physical devices to 4,5,6,7"
+                )
             target = triton.runtime.driver.active.get_current_target()
             report["triton_target"] = str(target)
             if target.backend != "ascend":
@@ -106,9 +116,13 @@ def main():
             cfg = OscarConfig.from_env()
             from .rotations import get_rotation
 
-            for layer in full_layers:
-                for path in (cfg.k_rotation_path, cfg.v_rotation_path):
-                    get_rotation(path, f"model.layers.{layer}.self_attn.attn", "cpu")
+            if not args.skip_rotations:
+                for layer in full_layers:
+                    for path in (cfg.k_rotation_path, cfg.v_rotation_path):
+                        get_rotation(path, f"model.layers.{layer}.self_attn.attn", "cpu")
+            report["rotation_validation"] = (
+                "pending_generation" if args.skip_rotations else "passed"
+            )
             report["full_layers"] = full_layers
             report["example_geometry"] = {
                 "physical_block_tokens": 768,

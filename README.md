@@ -10,26 +10,43 @@ BF16 sink/recent/current、LSE merge 和 vLLM general plugin。
 的多个候选 query 在同一 Triton program 内复用 KV tile。
 
 **当前为待真机验证的实现。** 本地 CPU 检查不代表 NPU 编译、端到端启动、图回放、
-精度或“不慢于原生”已经通过。没有提供目标机器连接或 Qwen3.5-27B 的专用 rotation。
+精度或“不慢于原生”已经通过。v0.2.0 已实现缺失 rotation 时的自动校准流程，
+该流程的实际 NPU 编译和模型运行也需要现场验证。
 
 ## 真机一键启动
 
 先进入已安装上述 Ascend/vLLM、torch_npu 和 Triton Ascend 的 NPU 容器或虚拟环境。
-从 GitHub 下载后执行下面一组命令，最后一条会自动安装扩展、预检并启动服务：
+从 GitHub 下载后执行下面一组命令，不需要手动填写 `.pt` 路径：
 
 ```bash
 git clone --branch codex/oscar-ascend https://github.com/jpl123123/Oscar_new.git
 cd Oscar_new
-VLLM_OSCAR_K_ROTATION_PATH=/absolute/path/qwen35_27b_k_rotation.pt \
-VLLM_OSCAR_V_ROTATION_PATH=/absolute/path/qwen35_27b_v_rotation.pt \
 bash scripts/serve.sh
 ```
 
-这两个路径必须替换为 **Qwen3.5-27B D256 校准矩阵**；包含全局层号
-3、7、…、63，格式兼容 OSCAR PR。缺层、D128 或非正交矩阵会报错，
-不会以 identity 冒充校准结果。作者当前公开的
-[RotationZoo](https://huggingface.co/Zhongzhu/OSCAR-RotationZoo/tree/main)
-列出了 Qwen3.5-4B/35B-A3B，不能据此视为已提供 27B 的矩阵。
+**所有脚本固定执行 `export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7`。**
+服务、校准子进程和真机测试都只允许使用物理后四卡，外部同名环境变量不会覆盖它。
+限制生效后，进程内逻辑 NPU 0..3 对应物理卡4..7。
+
+启动脚本依次执行：
+
+1. 安装当前外部扩展，检查目标运行环境与后四卡可见性。
+2. 按模型指纹和校准数据配置查找 K/V `.pt`，校验模型归属、层号、D256 和正交性。
+3. 文件不存在或自动缓存失效时，加载同一 W8A8 模型，使用原生 BF16 KV 做两遍校准，
+   在 NPU 上计算 QQT/SST、特征分解和 `U H Pbr`，生成 K/V `.pt`。
+4. 验证生成结果、保存缓存，释放校准模型与进程的显存。
+5. 用生成或复用的 `.pt` 启动 OSCAR 服务。
+
+默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
+首次运行需要额外校准时间，后续启动会直接复用有效缓存。
+默认校准使用随包提供的16段中英混合文本，每段最多1024 tokens，无需下载数据集。
+这是一套启动用的校准数据，**不等于模型质量验收通过**；也可通过
+`OSCAR_CALIBRATION_DATA=/path/to/prompts.jsonl` 使用实际业务文本。
+完整方法、配置和失败处理见 [自动校准说明](docs/calibration.md)。
+
+已有外部矩阵时，仍可选择设置 `VLLM_OSCAR_K_ROTATION_PATH` 和
+`VLLM_OSCAR_V_ROTATION_PATH`。显式指定的已有文件如果无效会报错并保留原文件；
+自动缓存损坏则重新校准。生成失败或矩阵校验失败时，脚本停止，不启动服务。
 
 脚本仅安装当前外部包并校验环境，不安装/替换 vLLM、torch_npu 或 Triton。
 `PYTHON_BIN` 可指向已有虚拟环境 Python；`MODEL`、`PORT` 可覆盖默认值。
@@ -43,7 +60,8 @@ bash scripts/serve.sh
 
 GitHub 仓库提供外部适配代码，原生参考树用
 `oscar_ascend/upstream_fingerprints.json` 固定版本，不作为子模块分发。
-这条命令不负责安装 CANN、驱动、原生 Ascend/vLLM 或生成校准矩阵。
+这条命令负责安装外部扩展和准备校准矩阵；CANN、驱动、原生 Ascend/vLLM
+和 Triton Ascend 使用现场已有环境。
 
 本版本有两个明确限制：
 
@@ -68,7 +86,8 @@ bash scripts/test_npu.sh
 # 分别启动三个模式，须先自行停止前一个服务，脚本不杀进程
 MODE=native bash scripts/serve.sh
 MODE=native-prefix-off bash scripts/serve.sh
-# OSCAR 模式使用上面带 rotation 路径的启动命令
+# OSCAR 模式会自动准备 rotation
+bash scripts/serve.sh
 
 # 每个模式启动后，在另一个终端执行，对应修改 LABEL
 LABEL=native bash scripts/bench.sh
@@ -102,10 +121,14 @@ python tools/compare_benchmarks.py artifacts/native-prefix-off artifacts/oscar \
 | `oscar_ascend/kernels.py` | 实际 Triton kernel 实现 |
 | `oscar_ascend/layout.py` | 三条内存上的字节地址与容量检查 |
 | `oscar_ascend/rotations.py` | 严格 rotation 文件加载 |
+| `oscar_ascend/prepare_rotations.py` | 缓存校验、缺失自动生成、配对发布 |
+| `oscar_ascend/calibrate.py` / `calibration_worker.py` | 原生 TP4 两遍模型校准 |
+| `oscar_ascend/calibration_kernels.py` | NPU 协方差、Jacobi 特征分解与矩阵组合 |
 | `oscar_ascend/check.py` | 源码指纹、版本、模型、NPU 预检 |
 | `scripts/serve.sh` | 一键启动 |
 | `scripts/test_npu.sh` / `scripts/bench.sh` | 真机测试 / 配对基准 |
 | `tests/` | CPU oracle、隔离测试、真实 NPU kernel/graph 测试 |
+| `AGENTS.md` | 后四卡的使用限制及后续维护规则 |
 
 上游数值依据为 [OSCAR PR #46774](https://github.com/vllm-project/vllm/pull/46774)，
 实现针对 D256 单组：K68 + V68 = 136 bytes，外层对齐到160 bytes。

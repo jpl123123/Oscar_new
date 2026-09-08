@@ -154,7 +154,13 @@ def test_serving_has_no_full_context_dequant_or_host_tensor_reads():
     "mode,disabled", [("native", False), ("native-prefix-off", True), ("oscar", True)]
 )
 def test_launch_command_preserves_mtp_and_graph(mode, disabled):
-    env = dict(os.environ, MODE=mode, DRY_RUN="1", MODEL="/model path/with spaces")
+    env = dict(
+        os.environ,
+        MODE=mode,
+        DRY_RUN="1",
+        MODEL="/model path/with spaces",
+        ASCEND_RT_VISIBLE_DEVICES="0,1,2,3",
+    )
     result = subprocess.run(
         ["bash", str(ROOT / "scripts/serve.sh")],
         env=env,
@@ -163,6 +169,7 @@ def test_launch_command_preserves_mtp_and_graph(mode, disabled):
         check=True,
     )
     cmd = shlex.split(result.stdout.splitlines()[1])
+    assert "ASCEND_RT_VISIBLE_DEVICES=4,5,6,7" in result.stdout.splitlines()[0]
     assert "/model path/with spaces" in cmd
     assert cmd[cmd.index("--tensor-parallel-size") + 1] == "4"
     assert ("--no-enable-prefix-caching" in cmd) is disabled

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Run inside the existing Ascend 0.23.0 + PR#12607 environment.
 set -euo pipefail
+export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
+export OSCAR_ASCEND_CALIBRATING=0
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 MODEL="${MODEL:-/softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp}"
@@ -52,17 +54,27 @@ fi
 cmd+=("$@")
 
 if [[ "${DRY_RUN:-0}" == 1 ]]; then
-  printf 'MODE=%s OSCAR_ASCEND_ENABLED=%s\n' "$MODE" "$OSCAR_ASCEND_ENABLED"
+  printf 'MODE=%s OSCAR_ASCEND_ENABLED=%s ASCEND_RT_VISIBLE_DEVICES=%s\n' "$MODE" "$OSCAR_ASCEND_ENABLED" "$ASCEND_RT_VISIBLE_DEVICES"
   printf '%q ' "${cmd[@]}"
   printf '\n'
   exit 0
 fi
 
 if [[ "$MODE" == oscar ]]; then
-  : "${VLLM_OSCAR_K_ROTATION_PATH:?Set calibrated Qwen3.5-27B D256 K rotation path}"
-  : "${VLLM_OSCAR_V_ROTATION_PATH:?Set calibrated Qwen3.5-27B D256 V rotation path}"
   # Install this small external package only; do not replace torch/vllm/Ascend.
   "$PYTHON_BIN" -m pip install --no-deps --no-build-isolation -e "$PROJECT_DIR"
+  "$PYTHON_BIN" -m oscar_ascend.check --model "$MODEL" --skip-rotations \
+    --report "$PROJECT_DIR/artifacts/runtime-preflight.json"
+  rotation_state_file="$(mktemp "${TMPDIR:-/tmp}/oscar-rotation-paths.XXXXXX")"
+  trap 'rm -f "$rotation_state_file"' EXIT
+  "$PYTHON_BIN" -m oscar_ascend.prepare_rotations --model "$MODEL" \
+    --cache-root "${OSCAR_ROTATION_DIR:-$PROJECT_DIR/artifacts/rotations}" \
+    --output-json "$rotation_state_file"
+  VLLM_OSCAR_K_ROTATION_PATH="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["k"])' "$rotation_state_file")"
+  VLLM_OSCAR_V_ROTATION_PATH="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["v"])' "$rotation_state_file")"
+  export VLLM_OSCAR_K_ROTATION_PATH VLLM_OSCAR_V_ROTATION_PATH
+  rm -f "$rotation_state_file"
+  trap - EXIT
   "$PYTHON_BIN" -m oscar_ascend.check --model "$MODEL" \
     --report "$PROJECT_DIR/artifacts/preflight.json"
 fi
