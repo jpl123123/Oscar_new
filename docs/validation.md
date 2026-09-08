@@ -10,7 +10,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **170 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **173 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -152,6 +152,20 @@ v0.3.0 基于 `aeadd39`，优化调度/数据搬运并使能直接运行时 FULL
 
 没有可报告的真机延迟、吞吐或完整graph成功记录。关闭FX可能失去某些fusion收益，
 新program budget的最佳值也需要实际profiler。当前不能宣称所有慢操作已消除。
+
+v0.3.1 基于 `620f698`，撤销造成 UB 对齐膨胀的三维解包优化：
+
+- 用户提供的 compiler IR 中，逻辑 `32×64×4` BF16 被放进 `32×64×16` UB allocation，
+  单个临时缓冲为64 KiB，另有同样大小的转置缓冲。附件从IR中段开始，缺少原始
+  `error:`/CompilationError诊断，因此不把该片段当作完整的UB overflow诊断。
+- `_load_vec` 恢复二维地址和位运算；AST与 `e148925` 中同名函数完全一致。
+  该历史版本有用户提供的首次设备完成记录，但这不证明当前整个persistent kernel
+  已在真机编译通过。紧凑任务、融合页表复制、直接FULL graph配置不变。
+- 实际解包函数体的CPU回归覆盖4/16/32行、无效行越界地址屏蔽、FP16元信息与BF16
+  数值；增加静态约束防止再引入窄尾轴三维展开。173项通过，两个NPU模块跳过。
+
+本次恢复重复字节地址，明确撤回从源代码load宽度推断其一定更快的优化判断。
+不改动 `.pt`、量化公式、位序或其他用户的设备。仍缺当前版本完整真机编译和graph验收。
 
 ## 尚未运行的必要检查
 

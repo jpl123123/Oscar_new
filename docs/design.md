@@ -239,8 +239,11 @@ history 和 raw 共享同一任务表；每个有效 query/split 仍写自己的
 512-token、129-request容量、QT=4、splits=8 时，旧 grid 为256×8=2048，
 新 grid 为4×8=32。这是 launch 数的变化，不是实测64倍速度提升。
 
-INT2 load 将 `(BN,D)` 重复字节地址改为 `(BN,D/4)` 唯一字节，再扩展四个2-bit code。
-scale/zero 的FP16存储、解包位序和BF16转换顺序保持不变。Jacobi 残差通过独立
+v0.3.0 曾将 INT2 load 改为 `(BN,D/4)` 唯一字节，再以三维尾轴扩展四个2-bit code。
+现场 IR 证明窄尾轴的对齐会放大 UB，v0.3.1 恢复 `(BN,D)` 二维 load/位运算，
+不在解包链中创建 `(BN,D/4,4)` 临时张量。重复字节地址的存在不等于实际GM
+事务一定重复四次，也不能用源代码load元素数推断吞吐。scale/zero 的FP16存储、
+解包位序和BF16转换顺序保持不变。Jacobi 残差通过独立
 Triton summary kernel 汇总，host 只接收停止/继续判断所需的一个浮点值。
 
 启动时禁用 FX/npugraph_ex，`cudagraph_mode` 保持 FULL_DECODE_ONLY，

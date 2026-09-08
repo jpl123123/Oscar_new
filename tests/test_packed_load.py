@@ -1,20 +1,26 @@
-"""Check actual unpack source values and number of requested packed-byte elements."""
+"""Check unpack values and guard against narrow-tail 3-D UB intermediates."""
 
 import ast
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from tests.test_attention_empty_tasks import Pointer
 
 
-def test_packed_byte_loaded_once_for_four_codes():
-    cache = torch.zeros(512, dtype=torch.uint8)
-    addresses = torch.tensor([7, 999999, 167, 327], dtype=torch.int64)
-    valid = torch.tensor([True, False, True, True])
-    expected = torch.zeros(4, 256, dtype=torch.bfloat16)
-    for row in (0, 2, 3):
+@pytest.mark.parametrize("rows", [4, 16, 32])
+def test_packed_values_and_masked_addresses_with_2d_unpack(rows):
+    cache = torch.zeros(rows * 160, dtype=torch.uint8)
+    addresses = torch.arange(rows, dtype=torch.int64) * 160 + 7
+    addresses[1] = 999999
+    valid = torch.ones(rows, dtype=torch.bool)
+    valid[1] = False
+    expected = torch.zeros(rows, 256, dtype=torch.bfloat16)
+    for row in range(rows):
+        if not valid[row]:
+            continue
         codes = (torch.arange(256) + row) % 4
         packed = (codes.reshape(64, 4) << (torch.arange(4) * 2)).sum(1).byte()
         scale = torch.tensor([0.125 * (row + 1)], dtype=torch.float16)
@@ -79,7 +85,23 @@ def test_packed_byte_loaded_once_for_four_codes():
         ),
         ns,
     )
-    result = ns["_load_vec"](Pointer(cache, "cache", []), addresses, valid, 256, 4)
+    result = ns["_load_vec"](Pointer(cache, "cache", []), addresses, valid, 256, rows)
     torch.testing.assert_close(result, expected, atol=0, rtol=0)
-    assert reads[0] == (torch.Size([4, 64]), 3 * 64)
-    assert sum(count for _, count in reads) == 3 * 68
+    assert reads[0] == (torch.Size([rows, 256]), (rows - 1) * 256)
+    # Repeated byte addresses are intentional. This counts source load lanes,
+    # not actual global-memory transactions made by the compiled device kernel.
+    assert sum(count for _, count in reads) == (rows - 1) * (256 + 4)
+
+
+def test_unpack_never_expands_a_four_element_tail_axis():
+    path = Path(__file__).resolve().parents[1] / "oscar_ascend/kernels.py"
+    fn = next(
+        n
+        for n in ast.parse(path.read_text()).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_vec"
+    )
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Tuple):
+            assert len(node.slice.elts) <= 2
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            assert node.func.attr not in {"reshape", "join", "interleave", "expand_dims"}

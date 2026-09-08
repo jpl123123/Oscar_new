@@ -204,17 +204,18 @@ def store_int2(key_rot, value_rot, history, slots, counts, layout):
 
 @triton.jit
 def _load_vec(Cache, address, valid, D: tl.constexpr, BN: tl.constexpr):
-    # Load each packed byte once, then unpack its four codes in registers.
-    packed_dims = tl.arange(0, D // 4)
-    data = tl.load(Cache + address[:, None] + packed_dims[None, :], valid[:, None], 0).to(tl.int32)
+    # Keep the whole unpack/dequant chain 2-D. A [BN,D/4,4] expansion makes
+    # Ascend pad its narrow tail axis: the reported [32,64,16] BF16 temporary
+    # alone consumes 64 KiB, before transpose and attention workspaces.
+    dims = tl.arange(0, D)
+    data = tl.load(Cache + address[:, None] + dims[None, :] // 4, valid[:, None], 0).to(tl.int32)
     low = tl.load(Cache + address + D // 4, valid, 0).to(tl.uint16)
     high = tl.load(Cache + address + D // 4 + 1, valid, 0).to(tl.uint16)
     scale = (low | (high << 8)).to(tl.float16, bitcast=True).to(tl.float32)
     low = tl.load(Cache + address + D // 4 + 2, valid, 0).to(tl.uint16)
     high = tl.load(Cache + address + D // 4 + 3, valid, 0).to(tl.uint16)
     zero = (low | (high << 8)).to(tl.float16, bitcast=True).to(tl.float32)
-    codes = (data[:, :, None] >> (2 * tl.arange(0, 4)[None, None, :])) & 3
-    codes = tl.reshape(codes, (BN, D))
+    codes = (data >> (2 * (dims[None, :] % 4))) & 3
     return (codes * scale[:, None] + zero[:, None]).to(tl.bfloat16)
 
 

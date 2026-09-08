@@ -70,12 +70,12 @@ v0.2.8 消除 GDN 捕获 metadata 的一次冗余 NPU→CPU 回读：接受 toke
 前序设备工作阻塞已经解决。启动日志仅报告 `capture_model returned`，不宣称
 真实请求 graph replay 或精度验收通过。
 
-v0.3.0 的执行与启动优化：
+v0.3.x 的执行与启动改动：
 
 - 在 NPU 上按批次建立紧凑任务表，供所有 history/raw split 使用；attention program
   循环处理任务，避免每个 program 重新扫描全部请求。默认 program budget 为32，
   512-token、8-split history 的 launch grid 从2048个 program 降为32个。
-- INT2 每向量读取64个 packed bytes，然后在寄存器解出256个值，避免重复字节地址。
+- INT2 使用二维解包，避免窄尾轴三维展开导致的 UB 对齐膨胀。
 - 页表复制融合进任务准备 kernel，仅复制原生 host 长度上界可达的列，保留固定
   buffer 地址/stride；dummy 不再反复清零最大上下文的整张页表。
 - Jacobi 残差在 NPU 汇总，host 每轮判断仅回读一个 scalar，已有 `.pt` 不重算。
@@ -86,6 +86,12 @@ v0.3.0 的执行与启动优化：
 这些是已实现并完成本地回归的候选优化。program 数、字节地址和复制范围的减少
 不等于已经测得端到端加速；直接 FULL graph 的真机捕获/请求 replay 仍需现场验证。
 `OSCAR_ASCEND_PROGRAM_BUDGET` 可选择8/16/32/64，默认32；实际最佳值需 profiler 测量。
+
+v0.3.1 撤销了 v0.3.0 的三维 packed-byte 展开优化。现场 IR 显示逻辑
+`32×64×4` BF16 tile 被补齐为 `32×64×16`，单个临时缓冲从16 KiB增至64 KiB，
+随后还有转置缓冲。恢复此前真机完成过执行的二维解包函数，保留紧凑任务、
+页表复制与直接 FULL graph 路径。该修正不改变 `.pt`、INT2 位序或量化公式；
+新整体 kernel 的真机编译和完整 graph 仍须验证。
 
 默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
 首次运行需要额外校准时间，后续启动会直接复用有效缓存。
