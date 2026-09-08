@@ -7,7 +7,7 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 MODEL="${MODEL:-/softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp}"
 MODE="${MODE:-oscar}"
-PORT="${PORT:-8989}"
+PORT="${PORT:-5656}"
 
 case "$MODE" in
   oscar) export OSCAR_ASCEND_ENABLED=1 ;;

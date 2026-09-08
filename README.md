@@ -54,7 +54,7 @@ bash scripts/serve.sh
 只预览命令：`DRY_RUN=1 bash scripts/serve.sh`。
 
 默认模型目录为 `/softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp`，
-服务监听 `0.0.0.0:8989`，模型服务名为 `qwen3.5`。如现场 Python 环境不是
+服务监听 `0.0.0.0:5656`，模型服务名为 `qwen3.5`。如现场 Python 环境不是
 默认的 `python3`，在启动命令前加入 `PYTHON_BIN=/absolute/path/to/python`；
 模型目录不同时加入 `MODEL=/absolute/path/to/model`。
 
