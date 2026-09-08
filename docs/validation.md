@@ -9,7 +9,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **119 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **129 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -86,6 +86,28 @@ v0.2.6 基于 `aacaf2a`，处理用户反馈的首组 FULL decode capture 停留
 
 这些改动修正已发现的 dummy 访问与编译结构问题；现有等待告警无法证明唯一现场根因，
 也没有在本地复现 node93 的 NPU 挂起。修复后的完整图捕获、推理与性能仍待真机验证。
+
+v0.2.7 基于 `6533773`：用户补充的日志显示各 OSCAR kernel 首次提交均返回，
+四个 worker 的512-token预热约57～59秒返回；后续超时栈都停在
+`gdn_attn.py:530` 的 `(num_accepted_tokens - 1).cpu()`。
+这是捕获 metadata 构建期间对前序设备队列的同步等待，不能从这个栈单独断言
+GDN 自身出错或某个 OSCAR kernel 已完成。保留原生 GDN 路径与编译配置。
+
+- attention 去掉 runtime `if live`，空任务/空 split 至少运行一个全掩码 tile，
+  保持 QK/PV dot 阶段可到达，屏蔽实际内存访问。这是对零计数混合核执行路径的
+  兼容性修正，尚未在目标编译器上证明它是本次设备挂起的唯一原因。
+- CPU 测试直接执行实际 attention 函数体，使用带越界检查的地址模型与 Torch
+  对应 TL 操作，覆盖 poisoned dummy metadata、额外空任务、空 history、
+  当前 token 因果 attention。检查空任务两次 dot、无 Q/K/V/页表/输出访问，
+  有效空 history 为0/-inf，正常 raw 输出与独立 dense softmax 对照通过。
+  这不模拟 NPU 的核间同步，也不替代真实编译与执行测试。
+- 首次图外预热按 head/stride/旋转布局或 split 配置验证 device completion；
+  回归确认提交前后同步的顺序、捕获内禁止同步、设备失败不记作完成。
+- 超时栈保存到每个 pid 独立文件，回归验证异常时取消定时器并关闭文件。
+  日志目录无法写入时回退 stderr，不因此阻止服务启动。
+
+本地总计129项通过，两个 NPU 模块跳过。没有修改 `.pt` 或校准指纹；
+未声称本地测试已经验证 node93 挂起消失。
 
 ## 尚未运行的必要检查
 

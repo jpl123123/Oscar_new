@@ -8,9 +8,11 @@ import sys
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from types import SimpleNamespace
 
 _dummy_run = ContextVar("oscar_dummy_run", default=False)
+_capturing = ContextVar("oscar_capturing", default=False)
 _traced_ops = set()
 _kernel_proxy = None
 
@@ -20,11 +22,14 @@ def in_dummy_run():
 
 
 @contextmanager
-def dummy_run_scope():
+def dummy_run_scope(capturing=None):
     token = _dummy_run.set(True)
+    capture_token = _capturing.set(capturing) if capturing is not None else None
     try:
         yield
     finally:
+        if capture_token is not None:
+            _capturing.reset(capture_token)
         _dummy_run.reset(token)
 
 
@@ -36,8 +41,8 @@ def _log(message):
     print(f"[OSCAR startup pid={os.getpid()}] {message}", flush=True)
 
 
-def trace_kernels(kernels):
-    """Trace only first startup launches; no tensor reads or device synchronization."""
+def trace_kernels(kernels, synchronize=None):
+    """Check first warmup launches, never synchronize during capture or serving."""
     global _kernel_proxy
     if not trace_enabled():
         return kernels
@@ -49,15 +54,29 @@ def trace_kernels(kernels):
             @functools.wraps(function)
             def invoke(*args, **kwargs):
                 label = name
+                variant = ()
+                if name == "rotate":
+                    x, rotation = args
+                    variant = (tuple(x.shape[1:]), x.stride(), rotation.stride())
                 if name == "attention_partials":
                     label += ".raw" if kwargs["raw"] else ".history"
-                if label in _traced_ops:
+                    variant = (args[8],)
+                key = (label, variant)
+                if key in _traced_ops:
                     return function(*args, **kwargs)
+                verify_device = synchronize is not None and not _capturing.get()
                 started = time.monotonic()
+                if verify_device:
+                    _log(f"{label} {variant}: drain prior work begin")
+                    synchronize()
                 _log(f"{label}: first launch begin (may JIT compile)")
                 result = function(*args, **kwargs)
-                _traced_ops.add(label)
                 _log(f"{label}: launch returned in {time.monotonic() - started:.2f}s")
+                if verify_device:
+                    _log(f"{label}: waiting for device completion")
+                    synchronize()
+                    _log(f"{label}: device complete in {time.monotonic() - started:.2f}s")
+                _traced_ops.add(key)
                 return result
 
             return invoke
@@ -96,15 +115,16 @@ def install_runner_hooks():
 
     @functools.wraps(original_dummy)
     def dummy(runner, *args, **kwargs):
+        bound = signature.bind(runner, *args, **kwargs)
+        bound.apply_defaults()
+        capturing = bound.arguments["is_graph_capturing"]
         trace = trace_enabled()
         if trace:
-            bound = signature.bind(runner, *args, **kwargs)
-            bound.apply_defaults()
-            phase = "capture" if bound.arguments["is_graph_capturing"] else "warmup/profile"
+            phase = "capture" if capturing else "warmup/profile"
             label = f"{phase} tokens={bound.arguments['num_tokens']} device={runner.device}"
             started = time.monotonic()
             _log(f"{label}: begin")
-        with dummy_run_scope():
+        with dummy_run_scope(capturing=capturing):
             result = original_dummy(runner, *args, **kwargs)
         if trace:
             _log(f"{label}: returned in {time.monotonic() - started:.2f}s")
@@ -113,15 +133,26 @@ def install_runner_hooks():
     @functools.wraps(original_capture)
     def capture(runner, *args, **kwargs):
         trace = trace_enabled()
+        stack_file = None
         if trace:
-            _log(f"graph capture begin device={runner.device}; stalled stacks every 120s")
+            directory = Path(os.getenv("OSCAR_STARTUP_LOG_DIR", "artifacts/startup"))
+            path = directory / f"worker-{os.getpid()}-stacks.log"
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                stack_file = path.open("a")
+            except OSError as exc:
+                _log(f"Cannot open stack log {path}: {exc}; using stderr")
+                path = "stderr"
+            _log(f"graph capture begin device={runner.device}; stalled stacks every 120s: {path}")
             # Also covers the native synchronize AFTER _dummy_run returns.
-            faulthandler.dump_traceback_later(120, repeat=True)
+            faulthandler.dump_traceback_later(120, repeat=True, file=stack_file)
         try:
             result = original_capture(runner, *args, **kwargs)
         finally:
             if trace:
                 faulthandler.cancel_dump_traceback_later()
+                if stack_file is not None:
+                    stack_file.close()
         if trace:
             _log(f"graph capture complete device={runner.device}")
         return result

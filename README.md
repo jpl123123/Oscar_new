@@ -51,9 +51,16 @@ rotation 正交性比较显式使用矩阵的 FP32 dtype 与 CPU 设备，再转
 v0.2.6 修正图启动路径：dummy 预热/捕获通过设备端计数屏蔽 KV 访问，
 避免私有 slot 快照错过原生后续的 `-1` 屏蔽。裁剪选择循环不再强制展开，
 rotation 的 token 数改为运行时参数，避免每种 capture size 重编同一旋转算法。
-保留 FULL_DECODE_ONLY；启动打印每组预热/捕获与首次 kernel launch 阶段，
-捕获期间每120秒输出 Python 栈，完成后取消。`launch returned` 仅表示提交返回，
-不表示设备执行已完成。`OSCAR_STARTUP_TRACE=0` 可关闭这些诊断输出。
+保留 FULL_DECODE_ONLY；启动打印每组预热/捕获与首次 kernel launch 阶段。
+
+v0.2.7 进一步处理设备执行等待：attention 的空任务/空 split 执行一个全掩码
+tile，避免整个 Cube/Vector 分支或循环被跳过，掩码继续阻止无效数据读写。
+图外预热时每个首次出现的 kernel 配置等待设备完成，日志会分别显示
+`launch returned`（提交返回）和 `device complete`（设备完成）；正式推理和图内
+不增加同步。捕获期间每120秒将各 worker 的 Python 栈分别写入
+`artifacts/startup/worker-<pid>-stacks.log`，完成后取消，避免四卡输出交错。
+`OSCAR_STARTUP_TRACE=0` 可关闭这些诊断，`OSCAR_STARTUP_LOG_DIR` 可指定日志目录。
+这些更新继续复用已有 `.pt`，不改变量化参数或矩阵文件。
 
 默认缓存位于 `artifacts/rotations/<模型指纹-校准配置指纹>/`。
 首次运行需要额外校准时间，后续启动会直接复用有效缓存。

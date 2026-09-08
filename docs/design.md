@@ -214,6 +214,15 @@ dummy builder 将自己的 counts 设为 [0,0]、slots 设为 -1，清零查询�
 `_rotate_kernel` 的 N 不再是 constexpr，并通过 `do_not_specialize` 复用不同
 token 数的编译结果；head 数、stride 和矩阵布局仍按实际值编译。
 这些变更不修改 rotation 文件、缓存指纹或裁剪数值定义。
+
+v0.2.7 将 `_attention_kernel` 的外层 `if live` 改为地址与数据掩码；
+inactive task 使用安全请求下标，Q、页表、KV 和输出的实际访问仍被屏蔽。
+空 split 的循环至少执行一个全掩码 tile，QK/PV 两个 dot 阶段均可到达，
+避免空任务沿零迭代路径跳过混合 Cube/Vector 流水。有效但空 history 的输出仍为
+0、LSE 为 -inf。额外全掩码 tile 会增加空 split 的设备工作量，性能须真机评估。
+图外首次 kernel 配置在提交前排空已有工作、提交后等待当前流完成，
+用以区分前序工作阻塞与当前 kernel 阻塞；捕获期和正常推理不执行这些同步。
+超时栈写入每个 worker 独立的文件，记录器退出时取消计时并关闭文件。
 需通过真实 NPU 图回放测试后才可认定图兼容。
 
 配置通过 PR 风格环境变量，启动脚本保留原始服务参数并提供 native 模式。

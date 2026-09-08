@@ -132,7 +132,7 @@ class OscarMetadataBuilder(AttentionMetadataBuilder[OscarMetadata]):
     def build_for_cudagraph_capture(
         self, common_attn_metadata, attn_state=AscendAttentionState.DecodeOnly
     ):
-        with dummy_run_scope():
+        with dummy_run_scope(capturing=True):
             result = self.build(0, common_attn_metadata)
         result.initial_prefill = False
         result.attn_state = attn_state

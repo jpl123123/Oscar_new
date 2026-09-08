@@ -152,7 +152,7 @@ class OscarAttentionImpl(AttentionImpl):
         if meta.is_dummy:
             from .startup import trace_kernels
 
-            kernels = trace_kernels(kernels)
+            kernels = trace_kernels(kernels, lambda: torch.npu.current_stream().synchronize())
         n = query.shape[0]
         query = query.view(n, self.num_heads, self.head_size)
         key = key.view(key.shape[0], self.num_kv_heads, self.head_size)

@@ -146,9 +146,10 @@ def test_capture_has_no_live_cache_access_and_real_build_restores_same_buffers(m
     assert real.block_tables[0, :6].tolist() == list(range(6, 12))
 
 
-def test_dummy_scope_and_watchdog_are_cleaned_after_failure(monkeypatch):
+def test_dummy_scope_and_watchdog_are_cleaned_after_failure(monkeypatch, tmp_path):
     events = []
     monkeypatch.setenv("OSCAR_STARTUP_TRACE", "1")
+    monkeypatch.setenv("OSCAR_STARTUP_LOG_DIR", str(tmp_path))
     monkeypatch.setattr(
         startup.faulthandler, "dump_traceback_later", lambda *a, **kw: events.append((a, kw))
     )
@@ -161,6 +162,7 @@ def test_dummy_scope_and_watchdog_are_cleaned_after_failure(monkeypatch):
 
         def _dummy_run(self, num_tokens, is_graph_capturing=False):
             assert startup.in_dummy_run()
+            assert startup._capturing.get()
             raise RuntimeError("kernel failed")
 
         def capture_model(self):
@@ -170,7 +172,11 @@ def test_dummy_scope_and_watchdog_are_cleaned_after_failure(monkeypatch):
     with pytest.raises(RuntimeError, match="kernel failed"):
         Runner().capture_model()
     assert not startup.in_dummy_run()
-    assert events == [((120,), {"repeat": True}), "cancel"]
+    assert not startup._capturing.get()
+    assert events[0][0] == (120,) and events[0][1]["repeat"]
+    stack_file = events[0][1]["file"]
+    assert Path(stack_file.name).parent == tmp_path and stack_file.closed
+    assert events[1] == "cancel"
 
 
 def test_kernel_trace_preserves_values_and_reports_first_launch_only(monkeypatch, capsys):
@@ -187,15 +193,81 @@ def test_kernel_trace_preserves_values_and_reports_first_launch_only(monkeypatch
     )
     ops = SimpleNamespace(**{name: lambda *args, **kw: args[0] for name in names})
     proxy = startup.trace_kernels(ops)
-    value = object()
-    assert proxy.rotate(value) is value and proxy.rotate(value) is value
-    assert proxy.attention_partials(value, raw=False) is value
-    assert proxy.attention_partials(value, raw=True) is value
+    value = torch.zeros(4, 1, 256)
+    rotation = torch.eye(256)
+    assert proxy.rotate(value, rotation) is value and proxy.rotate(value, rotation) is value
+    args = (value,) + (None,) * 7 + (8,)
+    assert proxy.attention_partials(*args, raw=False) is value
+    assert proxy.attention_partials(*args, raw=True) is value
     output = capsys.readouterr().out
     assert output.count("rotate: first launch begin") == 1
     assert "attention_partials.history" in output and "attention_partials.raw" in output
     monkeypatch.setenv("OSCAR_STARTUP_TRACE", "0")
     assert startup.trace_kernels(ops) is ops
+
+
+def test_first_warmup_variant_waits_for_device_but_capture_never_syncs(monkeypatch):
+    events = []
+    monkeypatch.setenv("OSCAR_STARTUP_TRACE", "1")
+    monkeypatch.setattr(startup, "_kernel_proxy", None)
+    monkeypatch.setattr(startup, "_traced_ops", set())
+    names = (
+        "rotate",
+        "store_int2",
+        "attention_partials",
+        "merge_splits",
+        "merge_paths",
+        "store_windows",
+    )
+
+    def launch(*args, **kwargs):
+        events.append("launch")
+        return args[0]
+
+    proxy = startup.trace_kernels(
+        SimpleNamespace(**{name: launch for name in names}),
+        lambda: events.append("sync"),
+    )
+    k = torch.zeros(4, 1, 256)
+    q = torch.zeros(4, 6, 256)
+    r = torch.eye(256)
+    with startup.dummy_run_scope(capturing=False):
+        proxy.rotate(k, r)
+        proxy.rotate(k, r)  # Already completed on device.
+        proxy.rotate(q, r)  # Different head/stride specialization must complete too.
+    assert events == ["sync", "launch", "sync", "launch", "sync", "launch", "sync"]
+    events.clear()
+    with startup.dummy_run_scope(capturing=True):
+        proxy.rotate(q, r.T)  # Even a previously unseen variant cannot synchronize here.
+    assert events == ["launch"]
+    assert not startup.in_dummy_run() and not startup._capturing.get()
+
+
+def test_failed_device_completion_does_not_mark_variant_as_ready(monkeypatch):
+    monkeypatch.setenv("OSCAR_STARTUP_TRACE", "1")
+    monkeypatch.setattr(startup, "_kernel_proxy", None)
+    monkeypatch.setattr(startup, "_traced_ops", set())
+    names = (
+        "rotate",
+        "store_int2",
+        "attention_partials",
+        "merge_splits",
+        "merge_paths",
+        "store_windows",
+    )
+    calls = []
+
+    def sync():
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("device execution failed")
+
+    proxy = startup.trace_kernels(
+        SimpleNamespace(**{name: lambda *a, **k: None for name in names}), sync
+    )
+    with startup.dummy_run_scope(capturing=False), pytest.raises(RuntimeError, match="device"):
+        proxy.rotate(torch.zeros(4, 1, 256), torch.eye(256))
+    assert not startup._traced_ops
 
 
 @pytest.mark.parametrize("ratio", [0, 0.875, 0.92, 0.96, 1.0])
