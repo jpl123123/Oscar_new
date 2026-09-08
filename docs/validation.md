@@ -9,7 +9,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **59 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **76 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -29,6 +29,11 @@ QQT/SST 和 Jacobi 的 CPU 数学 oracle；一键脚本成功与校准失败两�
 生成器/模型/一键启动的控制流程测试使用 fake，不代表真实模型已生成 `.pt`。
 设备测试故意传入 `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`，确认所有运行入口及子进程
 强制使用 `4,5,6,7`，已添加 `AGENTS.md` 保存该限制。
+
+v0.2.1 新增：现场完整版本串的归一化、预检和实际插件注册回归；拒绝错误 release；
+源码差异作为审计信息、缺接口仍阻止启动；检查 base `5cb98caaa` 与额外 PR 参考树
+在适配关键接缝文件上的一致性。带 `torch 2.10.0+cpu` / TorchNPU / Triton 的预检测试
+使用 mock，仅验证判断流程，没有在 Mac 上执行真实 NPU API。
 
 ## 尚未运行的必要检查
 

@@ -25,21 +25,19 @@ def is_draft_layer(prefix):
 
 def register():
     global _registered
-    if os.getenv("OSCAR_ASCEND_CALIBRATING", "0") == "1":
+    calibrating = os.getenv("OSCAR_ASCEND_CALIBRATING", "0") == "1"
+    if not calibrating and (_registered or os.getenv("OSCAR_ASCEND_ENABLED", "0") != "1"):
+        return
+    from importlib.metadata import version
+
+    from .compat import validate_hook_interfaces, validate_versions
+
+    validate_versions({name: version(name) for name in ("vllm", "vllm-ascend")})
+    if calibrating:
         from .calibration_worker import install_hook
 
         install_hook()
         return
-    if _registered or os.getenv("OSCAR_ASCEND_ENABLED", "0") != "1":
-        return
-
-    from importlib.metadata import version
-
-    for package in ("vllm", "vllm-ascend"):
-        installed = version(package)
-        if installed.split("+")[0] != "0.23.0":
-            raise RuntimeError(f"OSCAR targets {package} 0.23.0, found {installed}")
-
     # Apply Ascend's own startup patches before resolving its platform class.
     from vllm_ascend import _ensure_global_patch
 
@@ -47,6 +45,7 @@ def register():
     from vllm.model_executor.layers.attention.attention import Attention
     from vllm_ascend.platform import NPUPlatform
 
+    validate_hook_interfaces(NPUPlatform, Attention)
     original_select = NPUPlatform.get_attn_backend_cls.__func__
 
     @classmethod

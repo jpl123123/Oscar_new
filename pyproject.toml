@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oscar-ascend"
-version = "0.2.0"
+version = "0.2.1"
 description = "External OSCAR INT2 KV attention for the pinned Qwen3.5 Ascend stack"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["packaging>=23"]
 
 [project.optional-dependencies]
 test = ["pytest>=8", "torch>=2.5", "numpy>=1.26", "ruff>=0.11"]

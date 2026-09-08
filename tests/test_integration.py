@@ -47,7 +47,8 @@ def test_plugin_disabled_does_not_import_npu(monkeypatch):
     assert not {"vllm", "vllm_ascend", "torch_npu", "triton"} & (set(sys.modules) - before)
 
 
-def test_hooks_are_idempotent_and_preserve_draft_and_encoder(monkeypatch):
+@pytest.mark.parametrize("ascend_version", ["0.23.0", "0.23.1.dev0+g5cb98caaa.d20260822"])
+def test_hooks_are_idempotent_and_preserve_draft_and_encoder(monkeypatch, ascend_version):
     class FakePlatform:
         @classmethod
         def get_attn_backend_cls(cls, selected_backend, attn_selector_config, num_heads=None):
@@ -71,7 +72,11 @@ def test_hooks_are_idempotent_and_preserve_draft_and_encoder(monkeypatch):
         module = ModuleType(name)
         module.__dict__.update(attributes)
         monkeypatch.setitem(sys.modules, name, module)
-    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.23.0")
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: "0.23.0+empty" if name == "vllm" else ascend_version,
+    )
     monkeypatch.setattr(plugin, "_registered", False)
     monkeypatch.setenv("OSCAR_ASCEND_ENABLED", "1")
     plugin.register()

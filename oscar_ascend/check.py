@@ -9,24 +9,47 @@ import os
 import pathlib
 import sys
 
+from .compat import validate_runtime_interfaces, validate_versions
 from .config import OscarConfig
 from .layout import CacheLayout
 
 
-def verify_sources(roots):
+def audit_sources(roots):
     manifest = json.loads(
         pathlib.Path(__file__).with_name("upstream_fingerprints.json").read_text()
     )
-    problems = []
+    mismatches = []
     for package, info in manifest.items():
         root = pathlib.Path(roots[package])
         for relative, expected in info["files"].items():
             path = root / relative
-            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-                problems.append(f"{package}: source mismatch: {path}")
-    if problems:
-        raise ValueError("\n".join(problems))
-    return {package: info["commit"] for package, info in manifest.items()}
+            actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+            if actual != expected:
+                mismatches.append(
+                    {
+                        "package": package,
+                        "path": str(path),
+                        "expected_sha256": expected,
+                        "actual_sha256": actual,
+                    }
+                )
+    return {
+        "exact_reference_match": not mismatches,
+        "reference_commits": {package: info["commit"] for package, info in manifest.items()},
+        "mismatches": mismatches,
+    }
+
+
+def verify_sources(roots):
+    """Strict audit of the read-only local reference trees; not a deployment gate."""
+    audit = audit_sources(roots)
+    if audit["mismatches"]:
+        raise ValueError(
+            "\n".join(
+                f"{row['package']}: source mismatch: {row['path']}" for row in audit["mismatches"]
+            )
+        )
+    return audit["reference_commits"]
 
 
 def check_model(path):
@@ -92,18 +115,14 @@ def main():
                 torch=torch.__version__, torch_npu=torch_npu.__version__, triton=triton.__version__
             )
             report["physical_npu_devices"] = os.environ["ASCEND_RT_VISIBLE_DEVICES"]
-            for package in ("vllm", "vllm-ascend"):
-                if report["versions"][package].split("+")[0] != "0.23.0":
-                    raise ValueError(
-                        f"Unsupported {package} version: {report['versions'][package]}"
-                    )
+            report["normalized_releases"] = validate_versions(report["versions"])
             roots = {
                 name: pathlib.Path(
                     importlib.util.find_spec(name.replace("-", "_")).origin
                 ).parent.parent
                 for name in ("vllm", "vllm-ascend")
             }
-            report["source_commits"] = verify_sources(roots)
+            report["source_audit"] = audit_sources(roots)
             if not torch.npu.is_available() or torch.npu.device_count() != 4:
                 raise ValueError(
                     "Expected exactly 4 visible NPUs after restricting physical devices to 4,5,6,7"
@@ -112,6 +131,8 @@ def main():
             report["triton_target"] = str(target)
             if target.backend != "ascend":
                 raise ValueError(f"Expected Triton Ascend, got {target.backend}")
+            report["interface_checks"] = validate_runtime_interfaces()
+            report["compatibility_basis"] = "release_family_and_required_interfaces"
             full_layers = check_model(args.model)
             cfg = OscarConfig.from_env()
             from .rotations import get_rotation

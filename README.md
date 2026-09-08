@@ -1,7 +1,10 @@
 # OSCAR INT2 for Qwen3.5-27B / vLLM Ascend
 
-外部适配实现，目标为本仓库参考树的 **vLLM Ascend 0.23.0 + PR #12607
-（19e436985）**，配套 vLLM 0.23.0。方案、公式、流程图和实施点见
+外部适配实现，开发参考为 **vLLM Ascend 0.23.0 + PR #12607（19e436985）**，
+配套 vLLM 0.23.0。运行时允许 Ascend **0.23.0 / 0.23.1**，包括开发版和本地
+构建后缀，并检查适配所需接口；例如现场的
+`vllm-ascend 0.23.1.dev0+g5cb98caaa.d20260822` 与 `vllm 0.23.0+empty`。
+方案、公式、流程图和实施点见
 [设计文档](docs/design.md)。参考源码没有修改，扩展不导入 `references/`。
 
 实现包括 Triton Ascend rotation、clip/INT2 store、分页 split-KV attention、
@@ -59,7 +62,10 @@ bash scripts/serve.sh
 模型目录不同时加入 `MODEL=/absolute/path/to/model`。
 
 GitHub 仓库提供外部适配代码，原生参考树用
-`oscar_ascend/upstream_fingerprints.json` 固定版本，不作为子模块分发。
+`oscar_ascend/upstream_fingerprints.json` 记录开发参考指纹，不作为子模块分发。
+运行时源码差异记录在预检报告的 `source_audit` 中，不因构建标签或整文件哈希不同
+直接拒绝；所需接口缺失、NPU 后端不符、KV geometry 不符仍会报错。
+`--sources-only` 保留严格哈希审计，仅用于维护本地只读参考树。
 这条命令负责安装外部扩展和准备校准矩阵；CANN、驱动、原生 Ascend/vLLM
 和 Triton Ascend 使用现场已有环境。
 

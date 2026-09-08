@@ -5,6 +5,12 @@
 配套 vLLM `0fc695fc6d1d82e9a5ac6835ac8e4e1c83703665`。
 参考目录只读。本实现不依赖其 Python import path，不复用旧适配工程。
 
+v0.2.1 的部署版本规则：vLLM 0.23.0、Ascend 0.23.0/0.23.1，允许 PEP 440
+开发版与 local build 后缀。现场版本 `0.23.1.dev0+g5cb98caaa.d20260822` 中的
+`5cb98caaa` 对应参考 Git 的 v0.23.0 tag；版本标签本身不能证明工作树内容或是否包含额外 PR。
+运行时以所需接口检查和实际 KV tensor geometry 为准，源码哈希仅作审计信息；
+本地 `--sources-only` 仍严格校验参考文件。版本/接口检查通过不代表 NPU 数值和性能验收通过。
+
 ## 1. 事实、范围与验收
 
 - FULL head_dim=256；Q heads=24，KV heads=4；TP4 每卡 Q=6、KV=1。

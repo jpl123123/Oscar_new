@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run inside the existing Ascend 0.23.0 + PR#12607 environment.
+# Run inside the existing vLLM 0.23.0 + Ascend 0.23.0/0.23.1 environment.
 set -euo pipefail
 export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
 export OSCAR_ASCEND_CALIBRATING=0
