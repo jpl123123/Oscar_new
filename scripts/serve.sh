@@ -32,7 +32,9 @@ export VLLM_OSCAR_V_CLIP_RATIO="${VLLM_OSCAR_V_CLIP_RATIO:-0.92}"
 
 compile_mode=""
 additional_config='{"enable_cpu_binding":true}'
-GRAPH_RUNTIME="${OSCAR_GRAPH_RUNTIME:-direct}"
+# One-click default is eager (no graph capture) until direct FULL capture
+# passes on-site validation; opt in with OSCAR_GRAPH_RUNTIME=direct|compile.
+GRAPH_RUNTIME="${OSCAR_GRAPH_RUNTIME:-eager}"
 if [[ "$MODE" == oscar ]]; then
   case "$GRAPH_RUNTIME" in
     direct)
@@ -76,7 +78,7 @@ fi
 if [[ "$MODE" == oscar ]]; then
   cmd+=(--kv-cache-dtype auto --dtype bfloat16)
 fi
-if [[ "${OSCAR_ENFORCE_EAGER:-0}" == 1 || "$GRAPH_RUNTIME" == eager ]]; then
+if [[ "${OSCAR_ENFORCE_EAGER:-0}" == 1 || ( "$MODE" == oscar && "$GRAPH_RUNTIME" == eager ) ]]; then
   cmd+=(--enforce-eager)
 fi
 cmd+=("$@")

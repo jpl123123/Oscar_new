@@ -116,9 +116,10 @@ v0.3.2 根据四个 worker 停在 history attention 的设备完成等待这一�
 脚本仅安装当前外部包，不安装/替换 vLLM、torch_npu 或 Triton。
 `PYTHON_BIN` 可指向已有虚拟环境 Python；`MODEL`、`PORT` 可覆盖默认值。
 默认保留用户的 TP4、262144 context、MTP3、async 和 FULL_DECODE_ONLY 参数。
-`MODE=oscar` 使用直接运行时图路径；两个 native 对照模式保留原来的 FX 配置。
-图路径可用 `OSCAR_GRAPH_RUNTIME` 选择（默认 `direct`）：
-`direct` 保持 mode=0 + 运行时 ACLGraph 整图捕获（真机验收未完成）；
+`MODE=oscar` 的一键默认是 eager（追加 `--enforce-eager`，不建图）；
+两个 native 对照模式保留原来的 FX 配置，不受该默认影响。
+图路径可用 `OSCAR_GRAPH_RUNTIME` 显式选择（默认 `eager`）：
+`direct` 使用 mode=0 + 运行时 ACLGraph 整图捕获（真机捕获曾卡死，验收未完成）；
 `compile` 恢复上游支持的 VLLM_COMPILE + npugraph_ex 配置，FULL 捕获录制的是
 编译后的模型，用于与直接路径 A/B 对照；`eager` 等价于追加 `--enforce-eager`。
 只预览命令：`DRY_RUN=1 bash scripts/serve.sh`。
@@ -149,13 +150,13 @@ Triton Ascend 驱动的目标名称 `npu`（例如 `Ascend910B4, warp_size=0`）
   不能声称此版本释放了 6.4 倍显存或提高了可分配 context 容量。
   实际页数由原生 memory profiling 决定，当前步 scratch 也会占用显存预算。
 
-如果需要排查图问题，可临时使用 `OSCAR_ENFORCE_EAGER=1`（或
-`OSCAR_GRAPH_RUNTIME=eager`），但 eager 结果不等于
-用户要求的 FULL_DECODE_ONLY 性能验收通过。图捕获阶段卡住时，先取回
+一键默认即 eager（不建图）；eager 结果不等于
+用户要求的 FULL_DECODE_ONLY 性能验收通过。要继续验证图路径时，用
+`OSCAR_GRAPH_RUNTIME=direct bash scripts/serve.sh`（或 `compile` 做上游
+支持路径对照）。图捕获阶段卡住时，先取回
 `artifacts/startup/worker-<pid>-stacks.log`（每120秒重复转储全部线程栈）：
 栈顶停留在 `ACLGraphWrapper.__call__` → `self.runnable(...)` 内的某一层，
-即可定位是哪一个算子/通信在 `torch.npu.graph` 捕获内阻塞；若要绕开直接
-捕获路径做对照，用 `OSCAR_GRAPH_RUNTIME=compile bash scripts/serve.sh`。
+即可定位是哪一个算子/通信在 `torch.npu.graph` 捕获内阻塞。
 
 ## 测试与 A/B 对照
 

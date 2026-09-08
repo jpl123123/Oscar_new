@@ -186,24 +186,27 @@ def test_launch_command_preserves_mtp_and_graph(mode, disabled):
     assert graph["cudagraph_mode"] == "FULL_DECODE_ONLY"
     additional = json.loads(cmd[cmd.index("--additional-config") + 1])
     if mode == "oscar":
-        assert graph["mode"] == 0
-        assert additional["ascend_compilation_config"] == {
-            "enable_npugraph_ex": False,
-            "enable_static_kernel": False,
-        }
+        # One-click default is the eager graph runtime until graph capture
+        # passes on-site validation.
+        assert "--enforce-eager" in cmd
+        assert "mode" not in graph
+        assert "ascend_compilation_config" not in additional
     else:
+        assert "--enforce-eager" not in cmd
         assert "mode" not in graph and "ascend_compilation_config" not in additional
-    assert "--async-scheduling" in cmd and "--enforce-eager" not in cmd
+    assert "--async-scheduling" in cmd
 
 
 def test_graph_runtime_selector_switches_compile_config():
-    def launch(graph_runtime):
+    def launch(graph_runtime=None):
         env = dict(
             os.environ,
             MODE="oscar",
             DRY_RUN="1",
-            OSCAR_GRAPH_RUNTIME=graph_runtime,
         )
+        env.pop("OSCAR_GRAPH_RUNTIME", None)
+        if graph_runtime is not None:
+            env["OSCAR_GRAPH_RUNTIME"] = graph_runtime
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/serve.sh")],
             env=env,
@@ -212,6 +215,10 @@ def test_graph_runtime_selector_switches_compile_config():
             check=True,
         )
         return shlex.split(result.stdout.splitlines()[1])
+
+    default = launch()
+    assert "--enforce-eager" in default
+    assert "mode" not in json.loads(default[default.index("--compilation-config") + 1])
 
     direct = launch("direct")
     assert json.loads(direct[direct.index("--compilation-config") + 1])["mode"] == 0
