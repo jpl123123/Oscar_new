@@ -9,7 +9,7 @@ import os
 import pathlib
 import sys
 
-from .compat import validate_runtime_interfaces, validate_versions
+from .compat import validate_runtime_interfaces, validate_triton_target, validate_versions
 from .config import OscarConfig
 from .layout import CacheLayout
 
@@ -129,8 +129,7 @@ def main():
                 )
             target = triton.runtime.driver.active.get_current_target()
             report["triton_target"] = str(target)
-            if target.backend != "ascend":
-                raise ValueError(f"Expected Triton Ascend, got {target.backend}")
+            report["triton_target_info"] = validate_triton_target(target)
             report["interface_checks"] = validate_runtime_interfaces()
             report["compatibility_basis"] = "release_family_and_required_interfaces"
             full_layers = check_model(args.model)

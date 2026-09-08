@@ -10,6 +10,22 @@ SUPPORTED_RELEASES = {
 }
 
 
+def validate_triton_target(target):
+    """Triton Ascend uses 'npu' in 3.2 builds; some distributions use 'ascend'.
+
+    Keep the driver's actual target intact. SIMD targets legitimately report
+    warp_size=0, which must not be judged using CUDA warp assumptions.
+    """
+    backend = getattr(target, "backend", None)
+    if backend not in ("npu", "ascend"):
+        raise ValueError(f"Expected Triton NPU backend ('npu' or 'ascend'), got {backend!r}")
+    return {
+        "backend": backend,
+        "arch": str(getattr(target, "arch", "")),
+        "warp_size": getattr(target, "warp_size", None),
+    }
+
+
 def validate_versions(versions):
     """Accept dev/local build labels without confusing 0.23.1 with 0.23.10."""
     normalized = {}
@@ -71,6 +87,7 @@ def validate_runtime_interfaces():
 
     _ensure_global_patch()
     from vllm import LLM
+    from vllm.config.parallel import ParallelConfig
     from vllm.model_executor.layers.attention.attention import Attention
     from vllm.v1.attention.backend import AttentionMetadataBuilder
     from vllm_ascend.attention.attention_v1 import (
@@ -81,6 +98,9 @@ def validate_runtime_interfaces():
     from vllm_ascend.platform import NPUPlatform
 
     checks = validate_hook_interfaces(NPUPlatform, Attention)
+    if not hasattr(ParallelConfig, "worker_extension_cls"):
+        raise ValueError("ParallelConfig.worker_extension_cls is required for calibration RPC")
+    checks["ParallelConfig.worker_extension_cls"] = "available"
     for label, method, required in (
         ("LLM.collective_rpc", getattr(LLM, "collective_rpc", None), ("method", "args", "kwargs")),
         (

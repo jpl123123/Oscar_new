@@ -9,7 +9,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **76 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **83 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -34,6 +34,14 @@ v0.2.1 新增：现场完整版本串的归一化、预检和实际插件注册�
 源码差异作为审计信息、缺接口仍阻止启动；检查 base `5cb98caaa` 与额外 PR 参考树
 在适配关键接缝文件上的一致性。带 `torch 2.10.0+cpu` / TorchNPU / Triton 的预检测试
 使用 mock，仅验证判断流程，没有在 Mac 上执行真实 NPU API。
+
+v0.2.2 新增：使用现场 `backend=npu, arch=Ascend910B4, warp_size=0` 的预检回归，
+同时兼容 `ascend` 名称并拒绝 CUDA/HIP/CPU 后端；校准采用 worker extension 的
+字符串 RPC，控制消息可由默认序列化编码；核对所有校准 LLM 参数都存在于同版
+LLM/EngineArgs 接口。核对官方
+[NPUDriver.get_current_target](https://github.com/Ascend/triton-ascend/blob/main/third_party/ascend/backend/driver.py#L156)
+返回 `npu` 和 `warp_size=0`；核对本地上游 `vllm/v1/serial_utils.py` 默认拒绝函数对象。
+未连接真机，未声称上述本地检查等同于端到端真机成功。
 
 ## 尚未运行的必要检查
 

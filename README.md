@@ -66,6 +66,8 @@ GitHub 仓库提供外部适配代码，原生参考树用
 运行时源码差异记录在预检报告的 `source_audit` 中，不因构建标签或整文件哈希不同
 直接拒绝；所需接口缺失、NPU 后端不符、KV geometry 不符仍会报错。
 `--sources-only` 保留严格哈希审计，仅用于维护本地只读参考树。
+Triton Ascend 驱动的目标名称 `npu`（例如 `Ascend910B4, warp_size=0`）是有效值；
+预检也兼容使用 `ascend` 名称的发行构建。`warp_size=0` 不按 CUDA 的 warp 规则拒绝。
 这条命令负责安装外部扩展和准备校准矩阵；CANN、驱动、原生 Ascend/vLLM
 和 Triton Ascend 使用现场已有环境。
 

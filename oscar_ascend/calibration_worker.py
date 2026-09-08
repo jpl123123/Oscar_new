@@ -10,6 +10,19 @@ _states = {}
 _budget = 0
 
 
+class CalibrationWorkerExtension:
+    """Named RPCs transported as strings by vLLM's default message serializer."""
+
+    def oscar_calibration_begin(self, layers, token_budget):
+        return begin(self, layers, token_budget)
+
+    def oscar_calibration_second_pass(self):
+        return second_pass(self)
+
+    def oscar_calibration_finish(self, output_dir, provenance, max_sweeps):
+        return finish(self, output_dir, provenance, max_sweeps)
+
+
 def install_hook():
     global _installed
     if _installed:
@@ -47,7 +60,9 @@ def observe(impl, layer, query, key, value, num_tokens):
     state = _states[index]
     counter = "q_tokens" if _phase == 1 else "v_tokens"
     limit = _budget if _phase == 1 else state["q_tokens"]
-    take = min(num_tokens, query.shape[0], limit - state[counter])
+    # RPC result metadata must contain Python integers, even if a native
+    # scheduler supplies NumPy integer counts.
+    take = int(min(num_tokens, query.shape[0], limit - state[counter]))
     if take <= 0:
         return
     if query.device.type != "npu":

@@ -10,7 +10,12 @@ import pytest
 import torch
 
 from oscar_ascend import check
-from oscar_ascend.compat import require_parameters, validate_hook_interfaces, validate_versions
+from oscar_ascend.compat import (
+    require_parameters,
+    validate_hook_interfaces,
+    validate_triton_target,
+    validate_versions,
+)
 
 REPORTED = {"vllm": "0.23.0+empty", "vllm-ascend": "0.23.1.dev0+g5cb98caaa.d20260822"}
 
@@ -67,14 +72,18 @@ def test_source_drift_is_reported_but_strict_reference_audit_still_fails(tmp_pat
         check.verify_sources(roots)
 
 
-def mock_runtime(monkeypatch, tmp_path):
+def mock_runtime(monkeypatch, tmp_path, backend="npu"):
     npu = ModuleType("torch_npu")
     npu.__version__ = "2.10.0.post4"
     triton = ModuleType("triton")
     triton.__version__ = "3.2.0"
     triton.runtime = SimpleNamespace(
         driver=SimpleNamespace(
-            active=SimpleNamespace(get_current_target=lambda: SimpleNamespace(backend="ascend"))
+            active=SimpleNamespace(
+                get_current_target=lambda: SimpleNamespace(
+                    backend=backend, arch="Ascend910B4", warp_size=0
+                )
+            )
         )
     )
     monkeypatch.setitem(sys.modules, "torch_npu", npu)
@@ -97,10 +106,11 @@ def mock_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["check", "--model", "/model", "--skip-rotations"])
 
 
+@pytest.mark.parametrize("backend", ["npu", "ascend"])
 def test_reported_stack_reaches_interface_checks_despite_source_build_labels(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, capsys, backend
 ):
-    mock_runtime(monkeypatch, tmp_path)
+    mock_runtime(monkeypatch, tmp_path, backend)
     calls = []
     monkeypatch.setattr(
         check, "validate_runtime_interfaces", lambda: calls.append(True) or {"mock": "passed"}
@@ -112,6 +122,17 @@ def test_reported_stack_reaches_interface_checks_despite_source_build_labels(
     assert not result["source_audit"]["exact_reference_match"]
     assert result["physical_npu_devices"] == "4,5,6,7"
     assert result["npu_acceptance"] == "not_run" and calls == [True]
+    assert result["triton_target_info"] == {
+        "backend": backend,
+        "arch": "Ascend910B4",
+        "warp_size": 0,
+    }
+
+
+@pytest.mark.parametrize("backend", ["cuda", "hip", "cpu", None])
+def test_other_triton_backends_are_rejected(backend):
+    with pytest.raises(ValueError, match="Triton NPU"):
+        validate_triton_target(SimpleNamespace(backend=backend, arch="Ascend910B4"))
 
 
 def test_incompatible_api_stops_preflight_even_with_accepted_version(monkeypatch, tmp_path, capsys):

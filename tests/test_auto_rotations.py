@@ -178,6 +178,10 @@ def test_calibration_runs_two_native_passes_and_shuts_down(model, tmp_path, monk
             assert os.environ["ASCEND_RT_VISIBLE_DEVICES"] == "4,5,6,7"
             assert kwargs["enforce_eager"] and not kwargs["enable_prefix_caching"]
             assert kwargs["tensor_parallel_size"] == 4 and kwargs["quantization"] == "ascend"
+            assert (
+                kwargs["worker_extension_cls"]
+                == "oscar_ascend.calibration_worker.CalibrationWorkerExtension"
+            )
             self.llm_engine = SimpleNamespace(
                 engine_core=SimpleNamespace(shutdown=lambda: calls.append("shutdown"))
             )
@@ -186,7 +190,11 @@ def test_calibration_runs_two_native_passes_and_shuts_down(model, tmp_path, monk
             return SimpleNamespace(chat_template=None, encode=lambda text, **kw: list(range(1024)))
 
         def collective_rpc(self, method, **kwargs):
-            calls.append(method.__name__)
+            # Functions fail vLLM's default utility-message serialization.
+            # Our control plane must use strings plus plain serializable data.
+            assert isinstance(method, str)
+            json.dumps((method, kwargs))
+            calls.append(method)
             return [{"published": True}]
 
         def generate(self, *args, **kwargs):
@@ -214,7 +222,76 @@ def test_calibration_runs_two_native_passes_and_shuts_down(model, tmp_path, monk
         ],
     )
     calibrate.main()
-    assert calls == ["begin", "generate", "second_pass", "generate", "finish", "shutdown"]
+    assert calls == [
+        "oscar_calibration_begin",
+        "generate",
+        "oscar_calibration_second_pass",
+        "generate",
+        "oscar_calibration_finish",
+        "shutdown",
+    ]
+
+
+def test_named_worker_rpcs_delegate_without_serializing_functions(monkeypatch):
+    from oscar_ascend import calibration_worker as worker
+
+    seen = []
+    for name in ("begin", "second_pass", "finish"):
+
+        def callback(*args, _name=name):
+            seen.append((_name, args))
+            return {"phase": _name}
+
+        monkeypatch.setattr(worker, name, callback)
+    extension = worker.CalibrationWorkerExtension()
+    assert extension.oscar_calibration_begin([3, 7], 1024) == {"phase": "begin"}
+    assert extension.oscar_calibration_second_pass() == {"phase": "second_pass"}
+    assert extension.oscar_calibration_finish("/output", {"key": "value"}, 12) == {
+        "phase": "finish"
+    }
+    assert seen == [
+        ("begin", (extension, [3, 7], 1024)),
+        ("second_pass", (extension,)),
+        ("finish", (extension, "/output", {"key": "value"}, 12)),
+    ]
+
+
+def test_calibration_kwargs_exist_in_pinned_vllm_api():
+    import ast
+
+    root = Path(__file__).resolve().parents[1]
+    api = root / "references/vllm/vllm/entrypoints/llm.py"
+    engine = root / "references/vllm/vllm/engine/arg_utils.py"
+    if not api.exists():
+        pytest.skip("Read-only source references are not shipped to deployment")
+    ours = ast.parse((root / "oscar_ascend/calibrate.py").read_text())
+    call = next(
+        n
+        for n in ast.walk(ours)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "LLM"
+    )
+    supplied = {kw.arg for kw in call.keywords}
+    llm_class = next(
+        n
+        for n in ast.parse(api.read_text()).body
+        if isinstance(n, ast.ClassDef) and n.name == "LLM"
+    )
+    initializer = next(
+        n for n in llm_class.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"
+    )
+    accepted = {arg.arg for arg in initializer.args.args + initializer.args.kwonlyargs}
+    args_class = next(
+        n
+        for n in ast.parse(engine.read_text()).body
+        if isinstance(n, ast.ClassDef) and n.name == "EngineArgs"
+    )
+    accepted |= {
+        n.target.id
+        for n in args_class.body
+        if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+    }
+    assert supplied <= accepted, supplied - accepted
+    assert "worker_extension_cls" in supplied
 
 
 def test_calibration_child_always_uses_authorized_physical_cards(tmp_path, monkeypatch):

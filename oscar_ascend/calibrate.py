@@ -32,7 +32,6 @@ def main():
     from vllm import LLM, SamplingParams
 
     from .calibration_data import load_texts, token_prompts
-    from .calibration_worker import begin, finish, second_pass
     from .check import check_model
 
     layers = check_model(args.model)
@@ -44,6 +43,7 @@ def main():
     llm = LLM(
         model=args.model,
         tensor_parallel_size=4,
+        worker_extension_cls="oscar_ascend.calibration_worker.CalibrationWorkerExtension",
         dtype="bfloat16",
         quantization="ascend",
         trust_remote_code=True,
@@ -89,15 +89,15 @@ def main():
             "prompt_tokens": budget,
             "generator_version": 1,
         }
-        llm.collective_rpc(begin, args=(layers, budget))
+        llm.collective_rpc("oscar_calibration_begin", args=(layers, budget))
         print("[OSCAR calibration] Pass 1/2: Q covariance", flush=True)
         llm.generate(prompts, sampling, use_tqdm=True)
-        llm.collective_rpc(second_pass)
+        llm.collective_rpc("oscar_calibration_second_pass")
         print("[OSCAR calibration] Pass 2/2: SST weighted V covariance", flush=True)
         llm.generate(prompts, sampling, use_tqdm=True)
         print("[OSCAR calibration] Computing rotations on NPU", flush=True)
         results = llm.collective_rpc(
-            finish, args=(str(args.output_dir), provenance, args.max_sweeps)
+            "oscar_calibration_finish", args=(str(args.output_dir), provenance, args.max_sweeps)
         )
         if sum(bool(x.get("published")) for x in results) != 1:
             raise RuntimeError("Calibration did not publish exactly one K/V pair")

@@ -43,6 +43,8 @@ profile-key 包含生成器版本、校准文本内容和每段 token 上限。
    文本只参与校准，不作为性能/质量测评结果。生产质量应在独立题集上验证。
 3. 临时外部 hook 观察主模型16个 FULL 层的 post-RoPE Q/K/V；GDN/vision/draft不处理。
    模型 profiling 时 hook 处于关闭状态，只有显式 RPC 切换校准阶段后收集样本。
+   校准 worker 通过 `worker_extension_cls` 注册三个命名方法，`collective_rpc`
+   只传方法名字符串及基础数据类型，兼容 vLLM 默认消息序列化，不跨进程传 Python 函数。
 4. 第一遍在每个 TP rank 对自己的6个 Q heads 累计：
 
    `Cq = sum(QᵀQ) / (N * 6)`。
