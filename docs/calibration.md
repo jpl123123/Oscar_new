@@ -95,6 +95,11 @@ FP32 NPU 分解与上游 FP64 CPU 分解允许特征向量符号/退化子空间
 | `OSCAR_CALIBRATION_SWEEPS` | 12 | Jacobi 上限，允许2..32 |
 | `OSCAR_RECALIBRATE` | 0 | 设为1重算自动缓存，不覆盖显式指定文件 |
 
+业务 JSONL 中不足32 token 的短记录会被跳过并打印告警，全部过短才中止。
+仓库自带 `data/calibration_bootstrap.jsonl`（与内置16段文本相同内容、文件形式），
+需要文件形式时可直接
+`export OSCAR_CALIBRATION_DATA=$PWD/data/calibration_bootstrap.jsonl`。
+
 `ASCEND_RT_VISIBLE_DEVICES` 固定为 `4,5,6,7`，不提供覆盖参数。
 从已克隆的目录更新并运行：
 

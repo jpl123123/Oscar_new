@@ -48,6 +48,9 @@ EngineCore/TP worker 启动新解释器，避免多线程父进程 fork 后继�
 默认校准使用随包提供的16段中英混合文本，每段最多1024 tokens，无需下载数据集。
 这是一套启动用的校准数据，**不等于模型质量验收通过**；也可通过
 `OSCAR_CALIBRATION_DATA=/path/to/prompts.jsonl` 使用实际业务文本。
+业务 JSONL 中不足32 token 的短记录会被跳过并打印告警，全部过短才中止；
+仓库自带 `data/calibration_bootstrap.jsonl`（同一套文本的文件形式），可直接
+`export OSCAR_CALIBRATION_DATA=$PWD/data/calibration_bootstrap.jsonl`。
 完整方法、配置和失败处理见 [自动校准说明](docs/calibration.md)。
 
 已有外部矩阵时，仍可选择设置 `VLLM_OSCAR_K_ROTATION_PATH` 和
