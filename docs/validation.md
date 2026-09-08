@@ -9,7 +9,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **91 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **95 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -48,6 +48,12 @@ v0.2.3 新增：在阻止所有 vLLM/Ascend 导入的条件下，读取真实参
 包复现 DeviceOperator 循环导入，验证正常包初始化顺序可完成导入；服务注册延迟读取
 Attention 类、跳过尚未初始化完的模块；校准注册不安装 hook，begin 阶段才安装。
 这些测试覆盖导入行为，并非完整原生 NPU 模块或模型执行。
+
+v0.2.4 新增：所有入口及子进程在导入 Torch/vLLM 前强制 spawn，覆盖继承 fork 的
+情况；读取同版源码验证 EngineCore 与 TP executor 均通过 get_mp_context 选择上下文。
+实际运行 CPU 两层进程测试：父进程、模拟 EngineCore 均先运行 Torch/autograd 并建立
+后台线程，再创建子进程；两层均以 spawn 启动，父进程标记没有被继承，子进程 Torch
+梯度计算结果正常。该测试证明进程隔离行为，不等于在目标 TorchNPU/CANN 上复现并消除断言。
 
 ## 尚未运行的必要检查
 

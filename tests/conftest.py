@@ -2,6 +2,7 @@ import importlib.util
 import os
 
 os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "4,5,6,7"
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 import pytest
 

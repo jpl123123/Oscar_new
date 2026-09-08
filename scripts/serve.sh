@@ -2,6 +2,7 @@
 # Run inside the existing vLLM 0.23.0 + Ascend 0.23.0/0.23.1 environment.
 set -euo pipefail
 export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export OSCAR_ASCEND_CALIBRATING=0
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -54,7 +55,7 @@ fi
 cmd+=("$@")
 
 if [[ "${DRY_RUN:-0}" == 1 ]]; then
-  printf 'MODE=%s OSCAR_ASCEND_ENABLED=%s ASCEND_RT_VISIBLE_DEVICES=%s\n' "$MODE" "$OSCAR_ASCEND_ENABLED" "$ASCEND_RT_VISIBLE_DEVICES"
+  printf 'MODE=%s OSCAR_ASCEND_ENABLED=%s ASCEND_RT_VISIBLE_DEVICES=%s VLLM_WORKER_MULTIPROC_METHOD=%s\n' "$MODE" "$OSCAR_ASCEND_ENABLED" "$ASCEND_RT_VISIBLE_DEVICES" "$VLLM_WORKER_MULTIPROC_METHOD"
   printf '%q ' "${cmd[@]}"
   printf '\n'
   exit 0

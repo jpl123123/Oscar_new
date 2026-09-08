@@ -13,6 +13,11 @@ Under this visibility mapping, logical NPU indices 0..3 refer to authorized
 physical devices 4..7. Do not confuse logical tensor-parallel ranks with physical
 card IDs. Never stop or modify workloads running on physical devices 0..3.
 
+All vLLM launchers and calibration subprocesses must set
+`VLLM_WORKER_MULTIPROC_METHOD=spawn` before importing TorchNPU/vLLM, overriding
+an inherited `fork`. EngineCore and TP workers must not fork a parent that has
+initialized Torch/OpenMP threads. Preserve the calibration module's main guard.
+
 Keep `references/` read-only. All adaptation code belongs to the external package.
 
 Preflight interface inspection must read source declarations without importing

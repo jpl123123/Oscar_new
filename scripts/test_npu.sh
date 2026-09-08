@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
 PYTHON_BIN="${PYTHON_BIN:-python3}"

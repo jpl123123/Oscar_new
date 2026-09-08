@@ -12,6 +12,7 @@ import sys
 from .compat import validate_triton_target, validate_versions
 from .config import OscarConfig
 from .layout import CacheLayout
+from .runtime_env import configure_process_environment
 from .source_interfaces import validate_source_interfaces
 
 
@@ -79,7 +80,7 @@ def check_model(path):
 
 
 def main():
-    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "4,5,6,7"
+    configure_process_environment()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model")
     parser.add_argument(
@@ -117,6 +118,7 @@ def main():
                 torch=torch.__version__, torch_npu=torch_npu.__version__, triton=triton.__version__
             )
             report["physical_npu_devices"] = os.environ["ASCEND_RT_VISIBLE_DEVICES"]
+            report["worker_multiproc_method"] = os.environ["VLLM_WORKER_MULTIPROC_METHOD"]
             report["normalized_releases"] = validate_versions(report["versions"])
             roots = {
                 name: pathlib.Path(

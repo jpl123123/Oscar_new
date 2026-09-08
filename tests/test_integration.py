@@ -165,6 +165,7 @@ def test_launch_command_preserves_mtp_and_graph(mode, disabled):
         DRY_RUN="1",
         MODEL="/model path/with spaces",
         ASCEND_RT_VISIBLE_DEVICES="0,1,2,3",
+        VLLM_WORKER_MULTIPROC_METHOD="fork",
     )
     result = subprocess.run(
         ["bash", str(ROOT / "scripts/serve.sh")],
@@ -175,6 +176,7 @@ def test_launch_command_preserves_mtp_and_graph(mode, disabled):
     )
     cmd = shlex.split(result.stdout.splitlines()[1])
     assert "ASCEND_RT_VISIBLE_DEVICES=4,5,6,7" in result.stdout.splitlines()[0]
+    assert "VLLM_WORKER_MULTIPROC_METHOD=spawn" in result.stdout.splitlines()[0]
     assert "/model path/with spaces" in cmd
     assert cmd[cmd.index("--tensor-parallel-size") + 1] == "4"
     assert ("--no-enable-prefix-caching" in cmd) is disabled

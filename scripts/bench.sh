@@ -2,6 +2,7 @@
 # Benchmark an already-running server. Does not stop/restart anyone's service.
 set -euo pipefail
 export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 MODEL="${MODEL:-/softwarePlatform/c00879303/Qwen3.5-27B-w8a8-mtp}"

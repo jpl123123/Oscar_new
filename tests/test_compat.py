@@ -103,6 +103,7 @@ def mock_runtime(monkeypatch, tmp_path, backend="npu"):
     )
     monkeypatch.setattr(check, "check_model", lambda model: list(range(3, 64, 4)))
     monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0,1,2,3")
+    monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "fork")
     monkeypatch.setattr(sys, "argv", ["check", "--model", "/model", "--skip-rotations"])
 
 
@@ -121,6 +122,7 @@ def test_reported_stack_reaches_interface_checks_despite_source_build_labels(
     assert result["versions"]["torch"] == "2.10.0+cpu"
     assert not result["source_audit"]["exact_reference_match"]
     assert result["physical_npu_devices"] == "4,5,6,7"
+    assert result["worker_multiproc_method"] == "spawn"
     assert result["npu_acceptance"] == "not_run" and calls == [True]
     assert result["triton_target_info"] == {
         "backend": backend,

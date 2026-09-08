@@ -9,8 +9,9 @@ from pathlib import Path
 
 
 def main():
-    # Physical cards 0..3 belong to someone else. Set before any NPU import.
-    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "4,5,6,7"
+    from .runtime_env import configure_process_environment
+
+    configure_process_environment()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -40,6 +41,7 @@ def main():
         f"[OSCAR calibration] Loading native BF16 KV model; data={source}, prompts={len(texts)}",
         flush=True,
     )
+    print("[OSCAR calibration] EngineCore/TP start method=spawn; physical NPUs=4,5,6,7", flush=True)
     llm = LLM(
         model=args.model,
         tensor_parallel_size=4,

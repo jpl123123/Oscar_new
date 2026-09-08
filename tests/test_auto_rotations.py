@@ -176,6 +176,7 @@ def test_calibration_runs_two_native_passes_and_shuts_down(model, tmp_path, monk
     class FakeLLM:
         def __init__(self, **kwargs):
             assert os.environ["ASCEND_RT_VISIBLE_DEVICES"] == "4,5,6,7"
+            assert os.environ["VLLM_WORKER_MULTIPROC_METHOD"] == "spawn"
             assert kwargs["enforce_eager"] and not kwargs["enable_prefix_caching"]
             assert kwargs["tensor_parallel_size"] == 4 and kwargs["quantization"] == "ascend"
             assert (
@@ -206,6 +207,7 @@ def test_calibration_runs_two_native_passes_and_shuts_down(model, tmp_path, monk
     monkeypatch.setenv("OSCAR_ASCEND_ENABLED", "1")
     monkeypatch.setenv("OSCAR_ASCEND_CALIBRATING", "0")
     monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0,1,2,3")
+    monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "fork")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -296,12 +298,14 @@ def test_calibration_kwargs_exist_in_pinned_vllm_api():
 
 def test_calibration_child_always_uses_authorized_physical_cards(tmp_path, monkeypatch):
     monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0,1,2,3")
+    monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "fork")
     seen = []
     monkeypatch.setattr(
         prep.subprocess, "run", lambda command, **kwargs: seen.append(kwargs["env"])
     )
     prep.run_generator("model", tmp_path, "model-hash", "profile-hash")
     assert seen[0]["ASCEND_RT_VISIBLE_DEVICES"] == "4,5,6,7"
+    assert seen[0]["VLLM_WORKER_MULTIPROC_METHOD"] == "spawn"
     assert seen[0]["OSCAR_ASCEND_ENABLED"] == "0"
     assert seen[0]["OSCAR_ASCEND_CALIBRATING"] == "1"
 
@@ -312,6 +316,8 @@ def test_every_shell_launcher_pins_cards_before_python():
         lines = path.read_text().splitlines()
         pin = lines.index("export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7")
         assert pin < next(i for i, line in enumerate(lines) if line.startswith("PYTHON_BIN="))
+        start = lines.index("export VLLM_WORKER_MULTIPROC_METHOD=spawn")
+        assert start < next(i for i, line in enumerate(lines) if line.startswith("PYTHON_BIN="))
 
 
 @pytest.mark.parametrize("calibration_fails", [False, True])
@@ -324,6 +330,7 @@ def test_one_command_installs_prepares_and_serves_in_order(tmp_path, calibration
 import json, os, sys
 args = sys.argv[1:]
 assert os.environ["ASCEND_RT_VISIBLE_DEVICES"] == "4,5,6,7"
+assert os.environ["VLLM_WORKER_MULTIPROC_METHOD"] == "spawn"
 with open(os.environ["FAKE_LOG"], "a") as stream:
     stream.write(json.dumps(args) + "\\n")
 if args[:2] == ["-m", "oscar_ascend.prepare_rotations"]:
@@ -351,6 +358,7 @@ elif args[:2] == ["-m", "vllm.entrypoints.cli.main"]:
         FAKE_FAIL=str(int(calibration_fails)),
         TMPDIR=str(tmp_path),
         ASCEND_RT_VISIBLE_DEVICES="0,1,2,3",
+        VLLM_WORKER_MULTIPROC_METHOD="fork",
     )
     for key in ("DRY_RUN", "VLLM_OSCAR_K_ROTATION_PATH", "VLLM_OSCAR_V_ROTATION_PATH"):
         env.pop(key, None)

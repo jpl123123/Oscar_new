@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from .check import check_model
+from .runtime_env import configure_process_environment
 
 
 def model_fingerprint(model):
@@ -74,11 +75,12 @@ def validate_file(path, layers, kind, fingerprint, profile=None, strict=True):
 
 
 def run_generator(model, output_dir, fingerprint, profile):
-    env = dict(
-        os.environ,
-        OSCAR_ASCEND_ENABLED="0",
-        OSCAR_ASCEND_CALIBRATING="1",
-        ASCEND_RT_VISIBLE_DEVICES="4,5,6,7",
+    env = configure_process_environment(
+        dict(
+            os.environ,
+            OSCAR_ASCEND_ENABLED="0",
+            OSCAR_ASCEND_CALIBRATING="1",
+        )
     )
     if env.get("VLLM_PLUGINS") and "oscar_ascend" not in env["VLLM_PLUGINS"].split(","):
         env["VLLM_PLUGINS"] += ",oscar_ascend"
@@ -206,7 +208,7 @@ def prepare(model, cache_root, k_path=None, v_path=None, generator=run_generator
 
 
 def main():
-    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "4,5,6,7"
+    configure_process_environment()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--cache-root", required=True)

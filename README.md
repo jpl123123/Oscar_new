@@ -30,6 +30,9 @@ bash scripts/serve.sh
 **所有脚本固定执行 `export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7`。**
 服务、校准子进程和真机测试都只允许使用物理后四卡，外部同名环境变量不会覆盖它。
 限制生效后，进程内逻辑 NPU 0..3 对应物理卡4..7。
+所有入口同时固定 `VLLM_WORKER_MULTIPROC_METHOD=spawn`，使校准和服务的
+EngineCore/TP worker 启动新解释器，避免多线程父进程 fork 后继承失效线程池。
+校准使用 Python LLM API，不能依赖正式 `vllm serve` CLI 才设置的 spawn 默认值。
 
 启动脚本依次执行：
 
@@ -136,6 +139,7 @@ python tools/compare_benchmarks.py artifacts/native-prefix-off artifacts/oscar \
 | `oscar_ascend/calibration_kernels.py` | NPU 协方差、Jacobi 特征分解与矩阵组合 |
 | `oscar_ascend/check.py` | 源码指纹、版本、模型、NPU 预检 |
 | `oscar_ascend/source_interfaces.py` | 无导入副作用的源码接口检查 |
+| `oscar_ascend/runtime_env.py` | 导入前固定后四卡与 spawn 进程策略 |
 | `scripts/serve.sh` | 一键启动 |
 | `scripts/test_npu.sh` / `scripts/bench.sh` | 真机测试 / 配对基准 |
 | `tests/` | CPU oracle、隔离测试、真实 NPU kernel/graph 测试 |

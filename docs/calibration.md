@@ -4,6 +4,15 @@
 缺失时校准、校验及启动。无需手动提供 rotation 路径。
 **所有运行入口固定 `ASCEND_RT_VISIBLE_DEVICES=4,5,6,7`**，并在 NPU 库导入前生效。
 校准使用 TP4，进程内逻辑 rank0 使用物理卡4；物理卡0..3不属于本项目。
+从 v0.2.4 起，脚本、Python 校准入口及其子进程在导入 Torch/vLLM 前固定
+`VLLM_WORKER_MULTIPROC_METHOD=spawn`。目标 vLLM 的 EngineCore 与 TP worker
+都通过 `get_mp_context()` 读取该设置。Python LLM API 原先默认 fork，
+在已经存在 Torch/OpenMP 后台线程时可能继承无效的线程池状态，现场出现了
+`ParallelOpenMP.cpp: Invalid thread pool!` 并导致 worker 初始化失败。
+采用 spawn 后由子进程重新初始化运行时；校准模块的 main guard 防止 spawn 时重复加载模型。
+
+参考：[vLLM 进程启动说明](https://docs.vllm.ai/en/stable/design/multiprocessing/)、
+[PyTorch 多进程说明](https://docs.pytorch.org/docs/stable/notes/multiprocessing.html)。
 
 ## 查找与复用
 
