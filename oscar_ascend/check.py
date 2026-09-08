@@ -9,9 +9,10 @@ import os
 import pathlib
 import sys
 
-from .compat import validate_runtime_interfaces, validate_triton_target, validate_versions
+from .compat import validate_triton_target, validate_versions
 from .config import OscarConfig
 from .layout import CacheLayout
+from .source_interfaces import validate_source_interfaces
 
 
 def audit_sources(roots):
@@ -101,6 +102,7 @@ def main():
                 "vllm-ascend": args.sources_only / "vllm-ascend",
             }
             report["source_commits"] = verify_sources(roots)
+            report["interface_checks"] = validate_source_interfaces(roots)
         else:
             if not args.model:
                 raise ValueError("--model is required for deployment preflight")
@@ -130,8 +132,8 @@ def main():
             target = triton.runtime.driver.active.get_current_target()
             report["triton_target"] = str(target)
             report["triton_target_info"] = validate_triton_target(target)
-            report["interface_checks"] = validate_runtime_interfaces()
-            report["compatibility_basis"] = "release_family_and_required_interfaces"
+            report["interface_checks"] = validate_source_interfaces(roots)
+            report["compatibility_basis"] = "release_family_and_source_interfaces"
             full_layers = check_model(args.model)
             cfg = OscarConfig.from_env()
             from .rotations import get_rotation

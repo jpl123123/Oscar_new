@@ -9,7 +9,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **83 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
+| `python -m pytest -q --junitxml=artifacts/local-tests.xml` | **91 passed, 2 skipped**；skip 为 serving 和 calibration 两个真实 NPU 测试模块 |
 | `ruff check oscar_ascend tests tools` | 通过 |
 | `python -m compileall -q oscar_ascend tests tools` | Python 语法通过；不等于 Triton JIT 编译通过 |
 | `bash -n scripts/serve.sh scripts/test_npu.sh scripts/bench.sh` | 通过 |
@@ -42,6 +42,12 @@ LLM/EngineArgs 接口。核对官方
 [NPUDriver.get_current_target](https://github.com/Ascend/triton-ascend/blob/main/third_party/ascend/backend/driver.py#L156)
 返回 `npu` 和 `warp_size=0`；核对本地上游 `vllm/v1/serial_utils.py` 默认拒绝函数对象。
 未连接真机，未声称上述本地检查等同于端到端真机成功。
+
+v0.2.3 新增：在阻止所有 vLLM/Ascend 导入的条件下，读取真实参考源码完成整个接口预检，
+该测试没有 mock 接口检查函数；不兼容构造参数仍被拒绝。用相同依赖边的最小 Python
+包复现 DeviceOperator 循环导入，验证正常包初始化顺序可完成导入；服务注册延迟读取
+Attention 类、跳过尚未初始化完的模块；校准注册不安装 hook，begin 阶段才安装。
+这些测试覆盖导入行为，并非完整原生 NPU 模块或模型执行。
 
 ## 尚未运行的必要检查
 

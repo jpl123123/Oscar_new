@@ -11,6 +11,13 @@ v0.2.1 的部署版本规则：vLLM 0.23.0、Ascend 0.23.0/0.23.1，允许 PEP 4
 运行时以所需接口检查和实际 KV tensor geometry 为准，源码哈希仅作审计信息；
 本地 `--sources-only` 仍严格校验参考文件。版本/接口检查通过不代表 NPU 数值和性能验收通过。
 
+v0.2.3 将预检改为纯 AST 源码读取，不执行原生模块初始化。
+服务插件只包装平台的 backend selector，并在原生 Attention 完成导入后安装构造/
+weight-loading hook；目标 runner 会在加载模型前探测 backend。
+校准插件注册只检查版本，在模型初始化完成后的 begin RPC 中才安装采样 hook。
+原生 global/worker patch 的时序由 vLLM Ascend 自己管理，扩展不手动调用
+`_ensure_global_patch`，避免 `device_op → ops → fused_moe → device_op` 循环。
+
 ## 1. 事实、范围与验收
 
 - FULL head_dim=256；Q heads=24，KV heads=4；TP4 每卡 Q=6、KV=1。

@@ -2,6 +2,7 @@
 
 import functools
 import os
+import sys
 from pathlib import Path
 
 _installed = False
@@ -27,10 +28,14 @@ def install_hook():
     global _installed
     if _installed:
         return
-    from vllm_ascend import _ensure_global_patch
-
-    _ensure_global_patch()
-    from vllm_ascend.attention.attention_v1 import AscendAttentionBackendImpl
+    # Called by the begin RPC AFTER LLM/model initialization, never by plugin
+    # discovery. Do not re-enter Ascend's order-sensitive import graph.
+    module = sys.modules.get("vllm_ascend.attention.attention_v1")
+    AscendAttentionBackendImpl = getattr(module, "AscendAttentionBackendImpl", None)
+    if AscendAttentionBackendImpl is None or getattr(
+        getattr(module, "__spec__", None), "_initializing", False
+    ):
+        raise RuntimeError("Native attention must be initialized before calibration begin RPC")
 
     original = AscendAttentionBackendImpl.forward
 
@@ -81,10 +86,9 @@ def observe(impl, layer, query, key, value, num_tokens):
 def begin(worker, layers, token_budget):
     """collective_rpc control message; model tensors are never returned by RPC."""
     global _phase, _states, _budget
+    install_hook()
     import torch
 
-    if not _installed:
-        raise RuntimeError("Calibration plugin was not loaded in this worker")
     _budget = token_budget
     device = torch.device("npu", torch.npu.current_device())
     _states = {

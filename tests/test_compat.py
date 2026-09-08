@@ -113,7 +113,7 @@ def test_reported_stack_reaches_interface_checks_despite_source_build_labels(
     mock_runtime(monkeypatch, tmp_path, backend)
     calls = []
     monkeypatch.setattr(
-        check, "validate_runtime_interfaces", lambda: calls.append(True) or {"mock": "passed"}
+        check, "validate_source_interfaces", lambda roots: calls.append(True) or {"mock": "passed"}
     )
     assert check.main() == 0
     result = json.loads(capsys.readouterr().out)
@@ -138,10 +138,10 @@ def test_other_triton_backends_are_rejected(backend):
 def test_incompatible_api_stops_preflight_even_with_accepted_version(monkeypatch, tmp_path, capsys):
     mock_runtime(monkeypatch, tmp_path)
 
-    def incompatible():
+    def incompatible(roots):
         raise ValueError("AscendCommonAttentionMetadata missing fields: slot_mapping")
 
-    monkeypatch.setattr(check, "validate_runtime_interfaces", incompatible)
+    monkeypatch.setattr(check, "validate_source_interfaces", incompatible)
     assert check.main() == 1
     assert "slot_mapping" in json.loads(capsys.readouterr().out)["error"]
 

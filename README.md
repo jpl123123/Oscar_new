@@ -64,7 +64,9 @@ bash scripts/serve.sh
 GitHub 仓库提供外部适配代码，原生参考树用
 `oscar_ascend/upstream_fingerprints.json` 记录开发参考指纹，不作为子模块分发。
 运行时源码差异记录在预检报告的 `source_audit` 中，不因构建标签或整文件哈希不同
-直接拒绝；所需接口缺失、NPU 后端不符、KV geometry 不符仍会报错。
+直接拒绝。v0.2.3 的接口预检只用 AST 读取已安装源码中的方法参数与元数据字段，
+不导入原生 attention/device/ops 模块，不主动触发 Ascend patch 初始化。
+实际类参数在挂钩时校验，KV geometry 在绑定原生 Tensor 时校验。
 `--sources-only` 保留严格哈希审计，仅用于维护本地只读参考树。
 Triton Ascend 驱动的目标名称 `npu`（例如 `Ascend910B4, warp_size=0`）是有效值；
 预检也兼容使用 `ascend` 名称的发行构建。`warp_size=0` 不按 CUDA 的 warp 规则拒绝。
@@ -133,6 +135,7 @@ python tools/compare_benchmarks.py artifacts/native-prefix-off artifacts/oscar \
 | `oscar_ascend/calibrate.py` / `calibration_worker.py` | 原生 TP4 两遍模型校准 |
 | `oscar_ascend/calibration_kernels.py` | NPU 协方差、Jacobi 特征分解与矩阵组合 |
 | `oscar_ascend/check.py` | 源码指纹、版本、模型、NPU 预检 |
+| `oscar_ascend/source_interfaces.py` | 无导入副作用的源码接口检查 |
 | `scripts/serve.sh` | 一键启动 |
 | `scripts/test_npu.sh` / `scripts/bench.sh` | 真机测试 / 配对基准 |
 | `tests/` | CPU oracle、隔离测试、真实 NPU kernel/graph 测试 |

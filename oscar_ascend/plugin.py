@@ -4,6 +4,7 @@ import functools
 import inspect
 import logging
 import os
+import sys
 
 _registered = False
 LOG = logging.getLogger(__name__)
@@ -30,27 +31,30 @@ def register():
         return
     from importlib.metadata import version
 
-    from .compat import validate_hook_interfaces, validate_versions
+    from .compat import require_parameters, validate_versions
 
     validate_versions({name: version(name) for name in ("vllm", "vllm-ascend")})
     if calibrating:
-        from .calibration_worker import install_hook
-
-        install_hook()
+        # Native initialization must run first. The named begin RPC attaches
+        # the observation hook after LLM has finished loading the model.
         return
-    # Apply Ascend's own startup patches before resolving its platform class.
-    from vllm_ascend import _ensure_global_patch
-
-    _ensure_global_patch()
-    from vllm.model_executor.layers.attention.attention import Attention
+    # The platform module is lightweight; leave native global/worker patches
+    # to vLLM's normal initialization. Never import attention/ops here.
     from vllm_ascend.platform import NPUPlatform
 
-    validate_hook_interfaces(NPUPlatform, Attention)
+    require_parameters(
+        "NPUPlatform.get_attn_backend_cls",
+        NPUPlatform.get_attn_backend_cls,
+        ("selected_backend", "attn_selector_config", "num_heads"),
+    )
     original_select = NPUPlatform.get_attn_backend_cls.__func__
 
     @classmethod
     @functools.wraps(original_select)
     def select(cls, selected_backend, attn_selector_config, num_heads=None):
+        # NPUModelRunner probes the backend after its native module imports
+        # complete and before model construction. Attach hooks at that point.
+        _install_loaded_attention_hooks(cls)
         if should_route(attn_selector_config):
             for name in (
                 "has_sink",
@@ -68,6 +72,29 @@ def register():
             return "oscar_ascend.backend.OscarAttentionBackend"
         return original_select(cls, selected_backend, attn_selector_config, num_heads)
 
+    NPUPlatform.get_attn_backend_cls = select
+    _registered = True
+    _install_loaded_attention_hooks(NPUPlatform)
+    LOG.warning(
+        "OSCAR external attention enabled; native allocation and GDN retained; "
+        "prefix sharing disabled; target verification quantized, MTP draft native. "
+        "NPU correctness/performance acceptance is required."
+    )
+
+
+def _install_loaded_attention_hooks(platform):
+    """Wrap only a completed, naturally imported Attention class."""
+    from .compat import validate_hook_interfaces
+
+    module = sys.modules.get("vllm.model_executor.layers.attention.attention")
+    if module is None or getattr(getattr(module, "__spec__", None), "_initializing", False):
+        return False
+    Attention = getattr(module, "Attention", None)
+    if Attention is None:
+        return False
+    if getattr(Attention, "_oscar_ascend_hooks_installed", False):
+        return True
+    validate_hook_interfaces(platform, Attention)
     original_init = Attention.__init__
     signature = inspect.signature(original_init)
 
@@ -94,12 +121,7 @@ def register():
             layer.impl.initialize_layer(layer)
         return result
 
-    NPUPlatform.get_attn_backend_cls = select
     Attention.__init__ = initialize
     Attention.process_weights_after_loading = process
-    _registered = True
-    LOG.warning(
-        "OSCAR external attention enabled; native allocation and GDN retained; "
-        "prefix sharing disabled; target verification quantized, MTP draft native. "
-        "NPU correctness/performance acceptance is required."
-    )
+    Attention._oscar_ascend_hooks_installed = True
+    return True

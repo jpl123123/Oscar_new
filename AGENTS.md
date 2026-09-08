@@ -14,3 +14,8 @@ physical devices 4..7. Do not confuse logical tensor-parallel ranks with physica
 card IDs. Never stop or modify workloads running on physical devices 0..3.
 
 Keep `references/` read-only. All adaptation code belongs to the external package.
+
+Preflight interface inspection must read source declarations without importing
+native attention/device/ops packages. Do not manually call Ascend's global patch
+initializer from preflight or plugin discovery. Runtime hooks must attach only
+after the relevant native modules have completed their normal initialization.
