@@ -32,11 +32,11 @@ def main():
     # vLLM is imported only AFTER the calibration plugin mode is selected.
     from vllm import LLM, SamplingParams
 
-    from .calibration_data import load_texts, token_prompts
+    from .calibration_data import load_texts, resolve_texts, token_prompts
     from .check import check_model
 
     layers = check_model(args.model)
-    texts, source = load_texts(args.data)
+    texts, source, builtin = resolve_texts(args.data)
     print(
         f"[OSCAR calibration] Loading native BF16 KV model; data={source}, prompts={len(texts)}",
         flush=True,
@@ -75,9 +75,13 @@ def main():
         },
     )
     try:
-        prompts = token_prompts(
-            llm.get_tokenizer(), texts, args.tokens, builtin=source.startswith("builtin")
-        )
+        try:
+            prompts = token_prompts(llm.get_tokenizer(), texts, args.tokens, builtin=builtin)
+        except ValueError as exc:
+            # e.g. every workload record is below the token floor; serving must not die here.
+            print(f"[OSCAR calibration] {exc}; falling back to the builtin bootstrap texts", flush=True)
+            texts, source = load_texts(None)
+            prompts = token_prompts(llm.get_tokenizer(), texts, args.tokens, builtin=True)
         budget = sum(len(p["prompt_token_ids"]) for p in prompts)
         sampling = SamplingParams(temperature=0, max_tokens=1, ignore_eos=True, seed=0)
         provenance = {

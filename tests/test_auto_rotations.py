@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from oscar_ascend import prepare_rotations as prep
-from oscar_ascend.calibration_data import load_texts, token_prompts
+from oscar_ascend.calibration_data import load_texts, resolve_texts, token_prompts
 
 
 @pytest.fixture
@@ -178,6 +178,85 @@ def test_short_user_prompts_are_skipped_not_fatal(capsys):
     assert "Skipped 2" in capsys.readouterr().out
     with pytest.raises(ValueError, match="below 32 tokens"):
         token_prompts(tokenizer, ["hi", "ok"], 1024)
+
+
+def test_resolve_texts_falls_back_when_data_unusable(tmp_path):
+    builtin = load_texts(None) + (True,)
+    assert resolve_texts() == builtin
+    assert resolve_texts(tmp_path / "missing.jsonl") == builtin
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("\n\n")
+    assert resolve_texts(empty) == builtin
+    good = tmp_path / "good.jsonl"
+    good.write_text(json.dumps("A real workload prompt line") + "\n")
+    assert resolve_texts(good) == (["A real workload prompt line"], "user-jsonl", False)
+
+
+def test_missing_data_file_fingerprints_as_builtin(monkeypatch):
+    monkeypatch.delenv("OSCAR_CALIBRATION_DATA", raising=False)
+    builtin = prep.profile_fingerprint()
+    monkeypatch.setenv("OSCAR_CALIBRATION_DATA", "/nonexistent/prompts.jsonl")
+    assert prep.profile_fingerprint() == builtin
+
+
+def test_calibration_falls_back_when_all_prompts_too_short(model, tmp_path, monkeypatch, capsys):
+    from oscar_ascend import calibrate
+
+    data = tmp_path / "short.jsonl"
+    data.write_text(json.dumps({"text": "hi"}) + "\n")
+    calls = []
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            self.llm_engine = SimpleNamespace(
+                engine_core=SimpleNamespace(shutdown=lambda: calls.append("shutdown"))
+            )
+
+        def get_tokenizer(self):
+            # "hi" encodes to 2 ids; builtin passages repeat to thousands of ids.
+            return SimpleNamespace(
+                chat_template=None, encode=lambda text, **kw: list(range(len(text)))
+            )
+
+        def collective_rpc(self, method, **kwargs):
+            calls.append(method)
+            return [{"published": True}]
+
+        def generate(self, *args, **kwargs):
+            calls.append("generate")
+
+    monkeypatch.setitem(
+        sys.modules, "vllm", SimpleNamespace(LLM=FakeLLM, SamplingParams=lambda **kw: kw)
+    )
+    # calibrate.main() mutates these directly; pre-set so monkeypatch restores them.
+    monkeypatch.setenv("OSCAR_ASCEND_ENABLED", "1")
+    monkeypatch.setenv("OSCAR_ASCEND_CALIBRATING", "0")
+    monkeypatch.setenv("OSCAR_CALIBRATION_DATA", str(data))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate",
+            "--model",
+            str(model),
+            "--output-dir",
+            str(tmp_path),
+            "--model-fingerprint",
+            "model-id",
+            "--profile-fingerprint",
+            "profile-id",
+        ],
+    )
+    calibrate.main()
+    assert calls == [
+        "oscar_calibration_begin",
+        "generate",
+        "oscar_calibration_second_pass",
+        "generate",
+        "oscar_calibration_finish",
+        "shutdown",
+    ]
+    assert "falling back to the builtin bootstrap texts" in capsys.readouterr().out
 
 
 def test_calibration_runs_two_native_passes_and_shuts_down(model, tmp_path, monkeypatch):

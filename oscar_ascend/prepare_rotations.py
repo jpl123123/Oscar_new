@@ -37,11 +37,13 @@ def profile_fingerprint():
     digest = hashlib.sha256(b"oscar-qqt-sst-r-h-pbr-v1\0")
     digest.update(os.getenv("OSCAR_CALIBRATION_TOKENS", "1024").encode())
     data_path = os.getenv("OSCAR_CALIBRATION_DATA")
-    if data_path:
+    try:
         with Path(data_path).open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(block)
-    else:
+    except (TypeError, OSError):
+        # A missing/unreadable file makes calibration fall back to the builtin
+        # texts, so the cache key must match the unset-variable case.
         digest.update(json.dumps(PASSAGES, ensure_ascii=False).encode())
     return digest.hexdigest()
 

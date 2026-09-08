@@ -72,6 +72,22 @@ def load_texts(path=None):
     return records, "user-jsonl"
 
 
+def resolve_texts(path=None):
+    """Prefer configured workload JSONL; unusable data falls back to bootstrap."""
+    if path:
+        try:
+            texts, source = load_texts(path)
+            return texts, source, False
+        except (OSError, ValueError) as exc:
+            print(
+                f"[OSCAR calibration] Unusable calibration data at {path}: {exc}; "
+                "falling back to the builtin bootstrap texts",
+                flush=True,
+            )
+    texts, source = load_texts(None)
+    return texts, source, True
+
+
 def token_prompts(tokenizer, texts, tokens=1024, builtin=False, minimum=32):
     # Real workload JSONL routinely contains short queries; skip them instead of
     # aborting a full calibration run that already loaded the TP4 model.
