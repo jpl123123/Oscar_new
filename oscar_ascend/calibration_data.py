@@ -88,6 +88,33 @@ def resolve_texts(path=None):
     return texts, source, True
 
 
+def _int_ids(value):
+    if isinstance(value, (list, tuple)) and all(isinstance(i, int) for i in value):
+        return list(value)
+    return []
+
+
+def _tokenize(tokenizer, text, minimum):
+    # A broken/incompatible chat template can render a long text to a handful of
+    # tokens or even raise; plain encoding keeps calibration usable in that case.
+    ids = []
+    if getattr(tokenizer, "chat_template", None):
+        try:
+            ids = _int_ids(
+                tokenizer.apply_chat_template(
+                    [{"role": "user", "content": text}],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                )
+            )
+        except Exception:
+            ids = []
+        if len(ids) >= minimum:
+            return ids
+    plain = _int_ids(tokenizer.encode(text, add_special_tokens=True))
+    return plain if len(plain) > len(ids) else ids
+
+
 def token_prompts(tokenizer, texts, tokens=1024, builtin=False, minimum=32):
     # Real workload JSONL routinely contains short queries; skip them instead of
     # aborting a full calibration run that already loaded the TP4 model.
@@ -97,15 +124,7 @@ def token_prompts(tokenizer, texts, tokens=1024, builtin=False, minimum=32):
         if builtin:
             # Deterministic long contexts, no downloads and no hidden benchmark dataset.
             text = "\n".join(f"Section {i + 1}: {text}" for i in range(48))
-        if getattr(tokenizer, "chat_template", None):
-            ids = tokenizer.apply_chat_template(
-                [{"role": "user", "content": text}],
-                tokenize=True,
-                add_generation_prompt=True,
-            )
-        else:
-            ids = tokenizer.encode(text, add_special_tokens=True)
-        ids = list(ids)[:tokens]
+        ids = _tokenize(tokenizer, text, minimum)[:tokens]
         if len(ids) < minimum:
             skipped.append(index)
             continue
@@ -118,7 +137,8 @@ def token_prompts(tokenizer, texts, tokens=1024, builtin=False, minimum=32):
         )
     if not prompts:
         raise ValueError(
-            f"All {len(texts)} calibration prompts are below {minimum} tokens; "
-            "fix OSCAR_CALIBRATION_DATA or unset it to use the builtin bootstrap texts"
+            f"All {len(texts)} calibration prompts are below {minimum} tokens even "
+            "after plain encoding; the tokenizer may be unusable — check it or "
+            "unset OSCAR_CALIBRATION_DATA to use the builtin bootstrap texts"
         )
     return prompts

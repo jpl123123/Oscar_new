@@ -180,6 +180,26 @@ def test_short_user_prompts_are_skipped_not_fatal(capsys):
         token_prompts(tokenizer, ["hi", "ok"], 1024)
 
 
+@pytest.mark.parametrize(
+    "apply_chat_template",
+    [
+        lambda *a, **kw: [1, 2, 3],  # renders any text to a handful of ids
+        lambda *a, **kw: "not even a token list",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("template error")),
+    ],
+)
+def test_broken_chat_template_falls_back_to_plain_encoding(apply_chat_template):
+    tokenizer = SimpleNamespace(
+        chat_template="<broken-jinja>",
+        apply_chat_template=apply_chat_template,
+        encode=lambda text, **kw: list(range(len(text))),
+    )
+    prompts = token_prompts(
+        tokenizer, ["A long enough test passage about a subject."], 1024, builtin=True
+    )
+    assert len(prompts[0]["prompt_token_ids"]) == 1024
+
+
 def test_resolve_texts_falls_back_when_data_unusable(tmp_path):
     builtin = load_texts(None) + (True,)
     assert resolve_texts() == builtin
